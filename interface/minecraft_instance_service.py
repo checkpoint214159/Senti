@@ -62,12 +62,8 @@ class MinecraftInstance:
                 return obj.tolist()
             else:
                 return obj
-        
-        import time
-        start = time.time()
+
         obs = convert_arrays_to_lists(obs)
-        end = time.time()
-        print(end - start, 'time elapsed')
 
         return {
             'obs': obs,

@@ -15,7 +15,8 @@ The rough idea is to create a generative model over state, observation, action, 
 - Minecraft as an environment with infinite possibilities
 
 
-## Special thanks to:
+## Credits:
 - The insanely hardworking and generous folk at MineDojo
 - Karl J. Friston and others from the Active Inference group for your revolutionary theories
+- OpenAI VPT Minecraft research, Dreamerv3 / Dreamerv3-Torch (transition model, reward heads, policy?)
 - Friends and family

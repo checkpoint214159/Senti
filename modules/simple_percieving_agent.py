@@ -11,7 +11,6 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from transitions import TransitionModel
 
 from mineclip import MineCLIP
 
@@ -41,23 +40,17 @@ class Agent(nn.Module):
 
     For now, only amortized inference will be supported. For research purposes i will try and make non-amortized easily
     integrable with the overall flow.
-
-    I will define seperate inference and planning modules, to avoid this class being
-    blown to an insane length making it troublesome to traverse and debug
     """
 
     def __init__(self,
         clip_config=None,
         num_policies=None,
-        history=3,
     ):
         # admin stuff
         super().__init__()
-
-        path = clip_config.pop('ckpt_path', None)
-        image_dim = clip_config.get('image_feature_dim', 512)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # path = clip_config.pop('ckpt_path', None)
         self.amortized_inf = True
-        self.history = history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
 
         # observations and states cache.
         self.states_cache = {}
@@ -66,37 +59,23 @@ class Agent(nn.Module):
         self.latent_observation_cache = {}
 
         # encoder to encode incoming observation(s)
-        self.obs_encoder = MineCLIP(**clip_config)
-        self.obs_encoder.load_ckpt(path, strict=True)
-        logging.info("Successfully loaded MineCLIP encoder.")
+        # self.encoder = MineCLIP(**clip_config).to(device)
+        # self.encoder.load_ckpt(path, strict=True)
+        # logging.info("Successfully loaded MineCLIP encoder.")
+        self.encoder = nn.Linear(2, 2)
 
-        # maps latent observation to state
-        self.state_encoder = nn.Sequential(
-            nn.Linear(image_dim, image_dim),
-            nn.LayerNorm(image_dim),
-            nn.ReLU()
-        )  # P(s|o)
-        
-        # maps states to latent observation
-        self.state_decoder = nn.Sequential(
-            nn.Linear(image_dim, image_dim),
-            # nn.LayerNorm(image_dim),
-            nn.ReLU()
-        ) # P(o|s).
+        self.state_encoder = nn.Linear(2, 2)  # P(s|o)
 
-        # read the name
-        self.transition_model = TransitionModel('thing')
+        # maps latent observation to latent states
+        self.decoder = nn.Linear(2, 2) # P(o|s).
 
-        # policy dist. init
-        self.policy_model = nn.Sequential(
-            nn.Linear(image_dim, image_dim),
-            # nn.LayerNorm(image_dim),
-            nn.ReLU()
-        )
+        self.preference_net = 1
+        self.interpreter = 1
+        self.transition_model = nn.Linear(2, 2)
 
         params = (
             list(self.state_encoder.parameters()) +
-            list(self.state_decoder.parameters()) +
+            list(self.decoder.parameters()) +
             list(self.transition_model.parameters())
         )
         self.model_optimizer = torch.optim.SGD(params, lr=0.05)
@@ -138,9 +117,8 @@ class Agent(nn.Module):
         Computationally expensive, TODO efficienitize this
         """
         for t, o in self.observation_cache.items():
-            lat_o = self.obs_encoder.forward_image_features(o)
+            lat_o = self.encoder(o)  # revert this back to MineCLIP encoding form
             self.latent_observation_cache[t] = lat_o
-            print('self.latent_observation_cache', t, self.latent_observation_cache[t].shape)
 
     def init_var_beliefs(self):
         """
@@ -158,7 +136,7 @@ class Agent(nn.Module):
 
         # seperate optimizer over beliefs
         all_params = list(self.states_cache.values())
-        self.beliefs_optimizer = torch.optim.SGD(all_params, lr=0.005)
+        self.beliefs_optimizer = torch.optim.SGD(all_params, lr=0.5)
 
     def forward(self,
                 observations,
@@ -169,13 +147,14 @@ class Agent(nn.Module):
                 1. Encode current observation into a latent observation.
                 2. Encode latent observation into belief about latent state at current timestep t.
             Belief updating:
-                3. From existing beliefs in the belief cache, calculate VFE and do belief updates via backprop
+                3. From existing beliefs in the belief cache, calculate VFE and do belief updates, to minimize
+                    VFE
             Parameter learning:
-                4. Every n steps, update model parameters
+                4. Final VFE acts as model loss to update parameters
             Planning:
                 5. Sample the several policies from the new model.
-                6. Do rollout(s), and calculate EFE of policy
-                7. Backprop to update beliefs over policies
+                6. Within each policy, calculate EFE.
+                7. Update distribution over policies
                 8. Repeat 5-7 until convergence.
             Action:
                 8. Sample a policy from the final distribution over policies, then take action
@@ -184,14 +163,10 @@ class Agent(nn.Module):
         # 1 - 4:
         t = self.curr_timestep
         self.observation_cache[t] = observations  # cache this observation
-        # if t > 0:
-        #     self.inference(print_statements=True)
-        # else:
-
         self.inference()
-        
-        # 5 - 8:
-        # self.planning()
+        # update parameters via vfe sum as loss.
+
+        # 
         # converged = False
         # while not converged:
         #     for i in range(self.num_policies):
@@ -207,15 +182,19 @@ class Agent(nn.Module):
 
         # return action
 
-        # cleanup: shift window and remove all keys not in the window
         self.curr_timestep += 1
-        self.prune()
+
+    def planning(
+            self,
+            policy,
+        ):
+        raise NotImplementedError
 
     def inference(
         self,
-        max_update_steps: int = 1000,
+        max_update_steps: int = 10000,
         update_rounds: int = 10,
-        print_statements: bool = False,
+
     ) -> float:
         """
         Run the inference procedure for belief updates and model parameter learning.
@@ -246,7 +225,7 @@ class Agent(nn.Module):
 
             # random timestep selection, to run inference on
             timestep = random.choice(list(self.states_cache))
-            # print('Selected timestep', timestep)
+            print('Selected timestep', timestep)
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
             P_states = {k: s.clone().detach() for k, s in P_states.items()}
             self.latent_observation_cache = {k: lat_o.clone().detach() for k, lat_o in self.latent_observation_cache.items()}
@@ -269,24 +248,6 @@ class Agent(nn.Module):
                         optimizer=self.model_optimizer,
                         loss=total_vfe
                     )
-                    # if print_statements:
-                    #     print_params(self.state_decoder)
-                    #     print_params(self.state_encoder)
-                    #     print_params(self.transition_model)
-                    #     for t, s in self.states_cache.items():
-                    #         print('t', t, 's', s)
-                    #     print('-------------latent obs-------------')
-                    #     for t, l_o in self.latent_observation_cache.items():
-                    #         print('t', t, 'l_o', l_o)
-                    #     print('----------------model updated---------------')
-                    #     print('-------------latent obs-------------')
-                    #     for t, l_o in self.latent_observation_cache.items():
-                    #         print('t', t, 'l_o', l_o)
-                    #     print_params(self.state_decoder)
-                    #     print_params(self.state_encoder)
-                    #     print_params(self.transition_model)
-                    #     for t, s in self.states_cache.items():
-                    #         print('t', t, 's', s)
 
                 # else:
                 #     # check for VFE convergence in non-amortized case
@@ -302,7 +263,6 @@ class Agent(nn.Module):
                 #     prev_vfe = current_vfe
 
         print("Reached max inference steps.")
-        # print('self.states_cache timesteps:', self.states_cache.keys())
         return total_vfe
     
     def compute_vfe_node(
@@ -334,7 +294,7 @@ class Agent(nn.Module):
         """
         # Compute gradient of prediction error w.r.t. state  (right now simple form TODO not simple form?)
         energy_obs = self.log_likelihood(po_t, o_pred)
-        # print('energy obs mean', energy_obs.mean())
+        # print('energy obs', energy_obs)
 
         # transition messages
         energy_states = 0.0
@@ -353,7 +313,6 @@ class Agent(nn.Module):
         # msg from prior
         # print('curr prior msg', self.kl_divergence(qs_t, ps_t))
         energy_states += self.kl_divergence(qs_t, ps_t)
-        # print('energy_states mean', energy_states.mean())
 
         total_energy = (energy_states - energy_obs).sum()
 
@@ -383,7 +342,7 @@ class Agent(nn.Module):
         ps_t = P_states[timestep]
         
         # observation messages
-        o_pred = self.state_decoder(qs_t)
+        o_pred = self.decoder(qs_t)
         o_true = self.latent_observation_cache[timestep]
 
         # posterior qs_t-1
@@ -396,17 +355,6 @@ class Agent(nn.Module):
         next_qs_t = None
         if (timestep + 1) in self.states_cache:
             next_qs_t = self.states_cache[timestep + 1]
-
-        # for k, thing in dict(
-        #     ps_t=ps_t, 
-        #     qs_t=qs_t, 
-        #     po_t=o_true,
-        #     o_pred=o_pred,
-        #     prev_ps_t=prev_ps_t,
-        #     next_qs_t=next_qs_t,
-        # ).items():
-        #     if thing is not None:
-        #         print(k, thing.min(), thing.max())
 
         total_energy = self.compute_vfe_node(
             ps_t=ps_t, 
@@ -421,61 +369,3 @@ class Agent(nn.Module):
             self.param_learning(optimizer=self.beliefs_optimizer, loss=total_energy)
 
         return total_energy
-    
-    def prune(self):
-        """
-        Helper func to prune from caches if not in window.
-        """
-        window = range(self.curr_timestep - self.history, self.curr_timestep)
-        print('window', list(window))
-        self.states_cache = {
-            t: v for t, v in self.states_cache.items() if t in window
-        }
-        self.latent_observation_cache = {
-            t: v for t, v in self.latent_observation_cache.items() if t in window
-        }
-        self.observation_cache = {
-            t: v for t, v in self.observation_cache.items() if t in window
-        }
- 
-    def planning(
-            self,
-            o_target
-        ):
-        """
-        Method to run planning.
-        """
-        total_efe = {}
-        for i in range(max_policies_sampled):
-            pi = policies[i].unsqueeze(0)  # shape: (1, policy_dim)
-            ps_t = self.states_cache[self.curr_timestep]
-
-            efe = 0
-            for t in range(horizon):
-                # Predict next state
-                ps_next = self.transition_model(ps_t, pi)
-
-                # Predict observation
-                po_next = self.state_decoder(ps_next)
-                o_dist = Normal(po_next, 1.0)
-                o_sample = o_dist.rsample()
-
-                # epistemic value
-                qs_next = self.state_encoder(o_sample)
-                epistemic = self.kl_divergence(qs_next, ps_next)
-
-                # instrumental value
-                energy_obs = self.log_likelihood(o_target, po_next)  # for now, very simple calc
-
-                efe += epistemic - energy_obs
-                ps_t = ps_next.detach()  # move to next state (prevent backprop across time)
-
-            total_efe[i] = efe
-
-        return total_efe  # shape: (N,)
-
-    def compute_efe_node(self):
-        """
-        Compute EFE. See what to do first
-        """
-

@@ -122,8 +122,8 @@ class TransitionModel(nn.Module):
         else:
             raise NotImplementedError(self._initial)
         
-    def forward(self, embed, action):
-        
+    # def forward(self, embed, action):
+
 
     def observe(self, embed, action, is_first, prev_state=None):
         """

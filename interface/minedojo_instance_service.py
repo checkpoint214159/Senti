@@ -8,25 +8,17 @@ step in the environment when it recieves that. Else, the environment remains in 
 Argparser is used to configure this script during runtime, but defaults are set so we don't need
 to always troublesomely pass in args we don't care about.
 """
-import minedojo
-# import matplotlib.pyplot as plt
-from PIL import Image
-import time
-import cv2
-import glob
-import numpy as np
-import json
-import hashlib
-import hydra
-import torch
-from hydra import compose, initialize
-from omegaconf import OmegaConf
-from mineclip import MineCLIP
-from pydantic import BaseModel
-import io
-from fastapi import FastAPI, APIRouter
-import uvicorn
 import argparse
+
+import numpy as np
+import uvicorn
+from fastapi import APIRouter, FastAPI
+
+# import matplotlib.pyplot as plt
+from pydantic import BaseModel
+
+import minedojo
+
 
 class Test(BaseModel):
     action: list[int]

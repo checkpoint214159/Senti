@@ -1,99 +1,107 @@
+import copy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical, Normal
 
 
 class StateNode(nn.Module):
     def __init__(
         self,
-        state_value: torch.Tensor | None = None,
-        state_dim: int | None = None,
-        discrete=False,
+        z_value: torch.Tensor | None = None,
+        h_value: torch.Tensor | None = None,
+        a_value: torch.Tensor | None = None,
+        z_dim: int | None = None,
+        h_dim: int | None = None,
+        a_dim: int | None = None,
         init_std=1.0,
         min_std=1e-3,
         learn_std=False,
         device=None
     ):
         """
-        Wraps around an existing state tensor.
+        Class encapsulating (z_t, h_t) state components:
+        - z_t: observation-linked state (can be discrete or continuous)
+        - h_t: recurrent memory state (always continuous)
+        Both of these are treated as learned parameters. 
+        Latent actions meanwhile, are not learned parameters,
+        and just saved here for convenience. 
 
         Args:
-            state_value (torch.Tensor or None): State value to use, if None tries to init with torch zeros
-            state_dim (int or None): If state_value is None, fallback to torch zeros init
-            discrete (bool): If True, uses discrete state representation.
-            init_std (float): Initial std for continuous case.
-            min_std (float): Minimum std for numerical stability.
-            learn_std (bool): Whether std is a learnable parameter.
-            device (str or torch.device): Device to place parameters on.
+            z_value: Init value for z_t
+            h_value: Init value for h_t
+            a_value: Init value for a_t
+            z_dim: Dimension of z_t, if no init value is given
+            h_dim: Dimension of h_t, if no init value is given
+            a_dim: Dimension of a_t, if no init value is given
+            init_std: Initial std for continuous z_t and h_t
+            min_std: Min std clamp for numerical stability
+            learn_std: Whether std of z_t and h_t is learnable
+            device: Torch device
         """
-        assert not (state_value is None and state_dim is None), 'Assertion failed, StateNode recieved a value and a default init dimension, failing gracefully.'
-        if state_value is not None:
-            assert isinstance(state_value, torch.Tensor), 'Assertion failed, expected state_value to be a Tensor, failing gracefully.'
         super().__init__()
-        self.not_default = True if state_value is not None else False
-        self.discrete = discrete
+        assert (z_value is not None or z_dim is not None), \
+            'Must provide z_value or z_dim.'
+        assert (h_value is not None or h_dim is not None), \
+            'Must provide h_value or h_dim.'
+        assert (a_value is not None or a_dim is not None), \
+                'Must provide h_value or h_dim.'
+
         self.min_std = min_std
-        self.device = state_value
-        self.logits, self.mean = None, None
+        self.device = device
 
-        if self.discrete:
-            self.logits = nn.Parameter(state_value) if self.not_default \
-                else nn.Parameter(torch.zeros(state_dim))
+        # ---- z_t (observation-affected state) ----
+        self.z_dim = z_value.shape[-1] if z_value is not None else z_dim
+        z_init = z_value if z_value is not None else torch.zeros(self.z_dim, device=device)
+        self.z_mean = nn.Parameter(z_init)
+
+        # ---- h_t ('world model') ----
+        self.h_dim = h_value.shape[-1] if h_value is not None else h_dim
+        h_init = h_value if h_value is not None else torch.zeros(self.h_dim, device=device)
+        self.h_mean = nn.Parameter(h_init)
+
+        # ---- a_t (latent action in some higher level action space) ----
+        self.a_dim = a_value.shape[-1] if a_value is not None else a_dim
+        a_init = a_value if a_value is not None else torch.zeros(self.a_dim, device=device)
+        self.a = a_init
+
+        if learn_std:  # assume no for debugging now
+            self.z_log_std = nn.Parameter(torch.ones(self.z_dim, device=device) * torch.log(torch.tensor(init_std)))
+            self.h_log_std = nn.Parameter(torch.ones(self.h_dim, device=device) * torch.log(torch.tensor(init_std)))
         else:
-            self.mean = nn.Parameter(state_value) if self.not_default \
-                else nn.Parameter(torch.zeros(state_dim))
-            if learn_std:
-                self._log_std = nn.Parameter(torch.ones(state_dim, device=device) * torch.log(torch.tensor(init_std)))
-            else:
-                self.register_buffer("_log_std", torch.ones(state_dim) * torch.log(torch.tensor(init_std)))
-    
-    def get_distribution(self):
-        """Return a torch.distributions object for sampling or computing log-probs."""
-        if self.discrete:
-            return Categorical(logits=self.logits)
-        else:
-            std = torch.clamp(self._log_std.exp(), min=self.min_std)
-            return Normal(loc=self.mean, scale=std)
+            self.register_buffer("z_log_std", torch.ones(self.z_dim, device=device) * torch.log(torch.tensor(init_std)))
+            self.register_buffer("h_log_std", torch.ones(self.h_dim, device=device) * torch.log(torch.tensor(init_std)))
 
-    def sample(self):
-        """Sample from the state distribution."""
-        dist = self.get_distribution()
-        return dist.sample()
-
-    def mode(self):
-        """Return the mode of the distribution (argmax or mean)."""
-        dist = self.get_distribution()
-        return dist.probs.argmax(dim=-1) if self.discrete else dist.mean
-
-    def entropy(self):
-        """Compute the entropy of the distribution."""
-        return self.get_distribution().entropy()
-
-    def log_prob(self, value):
-        """Compute log-probability of a given sample."""
-        return self.get_distribution().log_prob(value)
-
-    def forward(self):
-        """Return current parameter (logits or mean/std)."""
-        if self.discrete:
-            return self.logits
-        else:
-            std = torch.clamp(self._log_std.exp(), min=self.min_std)
-            return self.mean, std
+    def clone(self, detach: bool = True, freeze: bool = True): # type: ignore
+        """
+        Scuffed pytorch func to clone parameters.
+        """
+        new_node = copy.deepcopy(self)
         
-    def __repr__(self):
+        # Go through parameters and clone/detach/freeze as needed
+        for name, param in new_node.named_parameters():
+            # print('Cloning', name)
+            # print('param', param)
+            new_param = param.clone()
+            if detach:
+                new_param = new_param.detach()
+            new_param.requires_grad_(not freeze)
+            # print('new_param', new_param)
+            setattr(new_node, name, nn.Parameter(new_param, requires_grad=not freeze))
+        
+        return new_node
+
+
+    @property
+    def state(self):
+        """Returns the full latent state s_t = concat(z_t, h_t)"""
+        print('STATE PROPERTY IS CALLED FROM STATENODE, VERIFY')
         if self.discrete:
             probs = F.softmax(self.logits, dim=-1)
-            topk = torch.topk(probs, k=min(3, probs.numel()))
-            return (
-                f"StateNode(discrete=True, dim={self.logits.shape[0]}, "
-                f"top_probs={topk.values.tolist()}, indices={topk.indices.tolist()})"
-            )
+            assert probs.dim() == 2, "Expected z_t logits of shape (z_dim, discrete_buckets)"
+            z_t_flat = probs.view(-1)
         else:
-            mean = self.mean.detach().cpu().numpy()
-            std = torch.clamp(self._log_std.exp(), min=self.min_std).detach().cpu().numpy()
-            return (
-                f"StateNode(discrete=False, dim={self.mean.shape[0]}, "
-                f"mean={mean.tolist()}, std={std.tolist()})"
-            )
+            z_t_flat = self.mean
+
+        assert self.h is not None, "h_t must be initialized."
+        return torch.cat([z_t_flat, self.h], dim=-1)

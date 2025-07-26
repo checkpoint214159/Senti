@@ -10,11 +10,20 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from gym3.types import DictType
+from lib.action_mapping import CameraHierarchicalMapping
+from lib.actions import ActionTransformer
 from torch import nn
 from transitions import TransitionModel
 
 from mineclip import MineCLIP
 
+ACTION_TRANSFORMER_KWARGS = dict(
+    camera_binsize=2,
+    camera_maxval=10,
+    camera_mu=10,
+    camera_quantization_scheme="mu_law",
+)
 
 def setup_logging(log_path: Path):
     """Set up logging only if not already configured."""
@@ -40,10 +49,7 @@ class Agent(nn.Module):
     An agent built on the concepts of active inference.
 
     For now, only amortized inference will be supported. For research purposes i will try and make non-amortized easily
-    integrable with the overall flow.
-
-    I will define seperate inference and planning modules, to avoid this class being
-    blown to an insane length making it troublesome to traverse and debug
+    integrable with the overall flow. (not happening bud)
     """
 
     def __init__(self,
@@ -51,8 +57,22 @@ class Agent(nn.Module):
         num_policies=None,
         history=3,
     ):
+        """
+        The agent contains the following modules:
+            - CLIP encoder for o -> lat_o
+            - state encoder, then decoder for lat_o -> z -> lat_o
+            - TransitionModel (rename to dynamics soon?) h_tp1 = f(h_tm1, z_tm1, a_tm1)
+            - 
+        """
         # admin stuff
         super().__init__()
+
+        self.action_mapper = CameraHierarchicalMapping(n_camera_bins=11)
+        action_space = self.action_mapper.get_action_space_update()
+        action_space = DictType(**action_space)
+
+        self.action_transformer = ActionTransformer(**ACTION_TRANSFORMER_KWARGS)
+
 
         path = clip_config.pop('ckpt_path', None)
         image_dim = clip_config.get('image_feature_dim', 512)
@@ -64,29 +84,44 @@ class Agent(nn.Module):
 
         self.observation_cache = {}
         self.latent_observation_cache = {}
+        self.action_cache = {}
+        self.latent_action_cache = {}
 
         # encoder to encode incoming observation(s)
         self.obs_encoder = MineCLIP(**clip_config)
         self.obs_encoder.load_ckpt(path, strict=True)
         logging.info("Successfully loaded MineCLIP encoder.")
 
-        # maps latent observation to state
-        self.state_encoder = nn.Sequential(
+        # maps latent observation to state, for now only takes latent obs of image
+        self.z_encoder = nn.Sequential(
             nn.Linear(image_dim, image_dim),
             nn.LayerNorm(image_dim),
             nn.ReLU()
-        )  # P(s|o)
-        
+        )  # P(z|o)
         # maps states to latent observation
-        self.state_decoder = nn.Sequential(
+        self.z_decoder = nn.Sequential(
             nn.Linear(image_dim, image_dim),
-            # nn.LayerNorm(image_dim),
+            nn.LayerNorm(image_dim),
             nn.ReLU()
-        ) # P(o|s).
+        ) # P(z|o).
+        self.h_encoder = nn.Sequential(
+            nn.Linear(image_dim, image_dim),
+            nn.LayerNorm(image_dim),
+            nn.ReLU()
+        )  # P(h|z)
+        self.h_decoder = nn.Sequential(
+            nn.Linear(image_dim, image_dim),
+            nn.LayerNorm(image_dim),
+            nn.ReLU()
+        )  # P(z|h)
 
         # read the name
-        self.transition_model = TransitionModel('thing')
-
+        self.transition_model = TransitionModel(
+            z_dim=512,
+            a_dim=12,
+            h_dim=512
+            
+        ) # P(s_t+1 | s_t)
         # policy dist. init
         self.policy_model = nn.Sequential(
             nn.Linear(image_dim, image_dim),
@@ -95,8 +130,8 @@ class Agent(nn.Module):
         )
 
         params = (
-            list(self.state_encoder.parameters()) +
-            list(self.state_decoder.parameters()) +
+            list(self.z_encoder.parameters()) +
+            list(self.z_decoder.parameters()) +
             list(self.transition_model.parameters())
         )
         self.model_optimizer = torch.optim.SGD(params, lr=0.05)
@@ -112,7 +147,7 @@ class Agent(nn.Module):
         Helper func to calculate kl_divergence between two isotropic gaussians with variance 1, for now
         """
         return 0.5 * (-1 + 1 + (mean1 - mean2) ** 2)  # what even. idk bro, if gaussian is isotropic multivariate, its just this?
-    
+
     @staticmethod
     def log_likelihood(o_true, o_pred):
         """
@@ -132,32 +167,40 @@ class Agent(nn.Module):
         loss.backward()
         optimizer.step()
 
-    def encode_obs(self):
+    def update_states_cache(self):
         """
         Simple helper method to update all timesteps in observation cache.
-        Computationally expensive, TODO efficienitize this
+        
         """
         for t, o in self.observation_cache.items():
-            lat_o = self.obs_encoder.forward_image_features(o)
-            self.latent_observation_cache[t] = lat_o
-            print('self.latent_observation_cache', t, self.latent_observation_cache[t].shape)
-
-    def init_var_beliefs(self):
-        """
-        Simple helper method to initialize all variational beliefs over states, qs_t.
-        """
-        for t, lat_o in self.latent_observation_cache.items():
-            self.states_cache[t] = self.state_encoder(lat_o)
+            if t not in self.states_cache:
+                lat_o = self.obs_encoder.forward_image_features(o)
+                z = self.z_encoder(lat_o)
+                if t - 1 not in self.states_cache: # we have no prior hidden state
+                    h = self.h_encoder(z)  
+                else:
+                    state = self.states_cache[t - 1]
+                    h = self.transition_model(
+                        prev_h=state.h_mean,
+                        prev_z=state.z_mean,
+                        prev_lat_a=state.a
+                    )
+                self.states_cache[t] = StateNode(
+                    h_value=h,
+                    z_value=z,
+                    a_dim=512,
+                )
+                self.latent_observation_cache[t] = lat_o
 
     def optim_wrap(self):
         """
         Helper method to convert all states in state cache to parameters, wrapping around them with an optimizer
         """
-        for t in self.states_cache:
-            self.states_cache[t] = torch.nn.Parameter(self.states_cache[t])
-
-        # seperate optimizer over beliefs
-        all_params = list(self.states_cache.values())
+        # seperate optimizer over beliefs over states
+        all_params = []
+        for s in self.states_cache.values():
+            all_params.append(s.h_mean)
+            all_params.append(s.z_mean)
         self.beliefs_optimizer = torch.optim.SGD(all_params, lr=0.005)
 
     def forward(self,
@@ -184,11 +227,10 @@ class Agent(nn.Module):
         # 1 - 4:
         t = self.curr_timestep
         self.observation_cache[t] = observations  # cache this observation
-        # if t > 0:
-        #     self.inference(print_statements=True)
-        # else:
-
-        self.inference()
+        if t > 0:
+            self.inference(print_statements=False)
+        else:
+            self.inference()
         
         # 5 - 8:
         # self.planning()
@@ -213,7 +255,7 @@ class Agent(nn.Module):
 
     def inference(
         self,
-        max_update_steps: int = 1000,
+        max_update_steps: int = 100,
         update_rounds: int = 10,
         print_statements: bool = False,
     ) -> float:
@@ -237,19 +279,18 @@ class Agent(nn.Module):
             # for every amortized reset called, which is after one parameter learning session, recompute latent obs and 
             # beliefs over states, then optim wrap them.
             if amortized_reset:
-                self.encode_obs()
-                self.init_var_beliefs()
+                self.update_states_cache()
                 self.optim_wrap()
                 amortized_reset = False
             if step == 0:  # first step, initialize frozen priors.
-                P_states = {k: s.clone() for k, s in self.states_cache.items()}
+                P_states = {k: s.clone(freeze=True) for k, s in self.states_cache.items()}
 
             # random timestep selection, to run inference on
             timestep = random.choice(list(self.states_cache))
             # print('Selected timestep', timestep)
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
-            P_states = {k: s.clone().detach() for k, s in P_states.items()}
-            self.latent_observation_cache = {k: lat_o.clone().detach() for k, lat_o in self.latent_observation_cache.items()}
+            P_states = {k: s.clone(detach=True, freeze=True) for k, s in P_states.items()}
+            self.latent_observation_cache = {k: o.clone().detach() for k, o in self.latent_observation_cache.items()}
 
             # every 'update_rounds', do param learning
             if step % update_rounds == 0:
@@ -260,8 +301,9 @@ class Agent(nn.Module):
                         backprop_belief=False
                     ) for t in self.states_cache
                 )
-                P_states = {k: s.clone().detach() for k, s in P_states.items()}  # detaching is very important or pytorch explodes
-                print(f"[Step {step}] VFE = {total_vfe:.6f}")
+                P_states = {k: s.clone(detach=True, freeze=True) for k, s in P_states.items()}
+                self.latent_observation_cache = {k: o.clone().detach() for k, o in self.latent_observation_cache.items()}
+                print(f"[Step {step}] VFE = {total_vfe:.6f}") if print_statements else None
 
                 if self.amortized_inf:
                     # param learning for amortized case
@@ -270,8 +312,8 @@ class Agent(nn.Module):
                         loss=total_vfe
                     )
                     # if print_statements:
-                    #     print_params(self.state_decoder)
-                    #     print_params(self.state_encoder)
+                    #     print_params(self.z_decoder)
+                    #     print_params(self.z_encoder)
                     #     print_params(self.transition_model)
                     #     for t, s in self.states_cache.items():
                     #         print('t', t, 's', s)
@@ -282,8 +324,8 @@ class Agent(nn.Module):
                     #     print('-------------latent obs-------------')
                     #     for t, l_o in self.latent_observation_cache.items():
                     #         print('t', t, 'l_o', l_o)
-                    #     print_params(self.state_decoder)
-                    #     print_params(self.state_encoder)
+                    #     print_params(self.z_decoder)
+                    #     print_params(self.z_encoder)
                     #     print_params(self.transition_model)
                     #     for t, s in self.states_cache.items():
                     #         print('t', t, 's', s)
@@ -304,61 +346,64 @@ class Agent(nn.Module):
         print("Reached max inference steps.")
         # print('self.states_cache timesteps:', self.states_cache.keys())
         return total_vfe
-    
+
     def compute_vfe_node(
         self,
-        ps_t: torch.Tensor,
-        qs_t: torch.Tensor,
-        po_t: torch.Tensor,
-        o_pred: torch.Tensor,
-        prev_ps_t: torch.Tensor | None = None,
-        next_qs_t: torch.Tensor | None = None,
+        qh_t: torch.Tensor,
+        ph_t: torch.Tensor,
+        lat_o_pred: torch.Tensor,
+        lat_o_true: torch.Tensor,
+        ph_from_tm1: torch.Tensor | None = None,
+        qh_tm1: torch.Tensor | None = None,
+        qh_tp1: torch.Tensor | None = None,
+        ph_at_tp1: torch.Tensor | None = None,
         variance_prior: float = 1.0,
         variance_obs: float = 1.0
     ) -> torch.Tensor:
         """
-        Computes the variational free energy (VFE) at a specific timestep `t`.
+        Computes the variational free energy (VFE) at a specific timestep `t` for a single state node.
+
+        The VFE includes:
+        - KL divergence between current belief `qh_t` and prior `ph_t`
+        - KL divergence from message from the past (if ph_from_tm1 provided)
+        - KL divergence from message from the future (if qh_tp1 and ph_at_tp1 provided)
+        - Negative log-likelihood between predicted and true latent observations
 
         Args:
-            ps_t (torch.Tensor): Prior state at timestep t (frozen since perception)
-            qs_t (torch.Tensor): Variational est. state at timestep t
-            po_t (torch.Tensor): Observation at timestep t.
-            o_pred (torch.Tensor): Predicted observation at timestep t (decoder output)
-            prev_ps_t (torch.Tensor, optional): Prior at previous timestep t - 1 (used to calculate posterior at t)
-            next_qs_t (torch.Tensor, optional): Variational posterior at timestep t-1
-            variance_prior (float): Variance of the prior (assumes isotropic Gaussian).
-            variance_obs (float): Variance of the observation model (isotropic Gaussian).
+            qh_t (torch.Tensor): Current posterior mean (e.g., hidden state) at time `t`.
+            ph_t (torch.Tensor): Prior mean at time `t` from dynamics.
+            lat_o_pred (torch.Tensor): Predicted latent observation at time `t`.
+            lat_o_true (torch.Tensor): Actual latent observation at time `t`.
+            ph_from_tm1 (torch.Tensor, optional): Prior at `t` predicted from `t-1`.
+            qh_tm1 (torch.Tensor, optional): Variational posterior at `t-1` (unused here, for symmetry).
+            qh_tp1 (torch.Tensor, optional): Posterior at `t+1` (used for backward KL).
+            ph_at_tp1 (torch.Tensor, optional): Prediction of `qh_tp1` from forward model.
+            variance_prior (float): Variance for KL computations (assumes isotropic Gaussian).
+            variance_obs (float): Variance used for log-likelihood (assumes isotropic Gaussian).
 
         Returns:
-            torch.Tensor: Scalar VFE value at timestep t.
+            torch.Tensor: Scalar tensor representing the total variational free energy at timestep `t`.
         """
-        # Compute gradient of prediction error w.r.t. state  (right now simple form TODO not simple form?)
-        energy_obs = self.log_likelihood(po_t, o_pred)
-        # print('energy obs mean', energy_obs.mean())
+        # Observation likelihood (negative log-likelihood)
+        energy_obs = self.log_likelihood(lat_o_true, lat_o_pred)
 
-        # transition messages
         energy_states = 0.0
-        
-        # msg from previous timestep
-        if prev_ps_t is not None:
-            # print('prev msg', self.kl_divergence(qs_t, prev_ps_t))
-            energy_states += self.kl_divergence(qs_t, prev_ps_t)
 
-        # msg from kl at next timestep
-        if next_qs_t is not None:
-            ps_t_next = self.transition_model(ps_t)
-            # print('next msg', self.kl_divergence(next_qs_t, ps_t_next))
-            energy_states += self.kl_divergence(next_qs_t, ps_t_next)
+        # Message from previous timestep
+        if ph_from_tm1 is not None:
+            energy_states += self.kl_divergence(qh_t, ph_from_tm1)
 
-        # msg from prior
-        # print('curr prior msg', self.kl_divergence(qs_t, ps_t))
-        energy_states += self.kl_divergence(qs_t, ps_t)
-        # print('energy_states mean', energy_states.mean())
+        # Message from next timestep
+        if qh_tp1 is not None and ph_at_tp1 is not None:
+            energy_states += self.kl_divergence(qh_tp1, ph_at_tp1)
 
+        # Current prior vs posterior at time t
+        energy_states += self.kl_divergence(qh_t, ph_t)
+
+        # Total variational free energy = state energy - observation energy
         total_energy = (energy_states - energy_obs).sum()
-
         return total_energy
-    
+
     def inference_step(
             self,
             timestep,
@@ -369,56 +414,62 @@ class Agent(nn.Module):
         Step function to perform belief updating over cache of beliefs.
 
         For each step of belief updating, we isolate one node, calculate the corresponding messages
-        fed to it, then update it. Messages include
-            - observation message
-            - prev state message
-            - future state message
+        fed to it, then update it. 
 
         Args:
             timestep: Selected timestep with which we perform inference for
-            P_states: Dict of Ps_t 
+            P_states: Dict of Ph_t 
             backprop_belief: Boolean on whether or not to call belief optimizer.
         """
         qs_t = self.states_cache[timestep]
+        s_tm1 = self.states_cache.get(timestep - 1, None)
+        s_tp1 = self.states_cache.get(timestep + 1, None)
         ps_t = P_states[timestep]
         
-        # observation messages
-        o_pred = self.state_decoder(qs_t)
-        o_true = self.latent_observation_cache[timestep]
+        # message from obs
+        qz_t = qs_t.z_mean
+        lat_o_pred = self.z_decoder(qz_t)
+        lat_o_true = self.latent_observation_cache[timestep]
 
-        # posterior qs_t-1
-        prev_ps_t = None
-        if (timestep - 1) in self.states_cache:
-            s_prev = self.states_cache[timestep - 1]
-            prev_ps_t = self.transition_model(s_prev)
+        # -------- prior from t-1 -------- 
+        ph_from_tm1, qh_tm1 = None, None
+        if s_tm1 is not None:
+            qh_tm1, qz_tm1, a_tm1 = s_tm1.h_mean, s_tm1.z_mean, s_tm1.a
+            ph_from_tm1 = self.transition_model(qh_tm1, qz_tm1, a_tm1)
 
-        # prior at qs_t+1
-        next_qs_t = None
-        if (timestep + 1) in self.states_cache:
-            next_qs_t = self.states_cache[timestep + 1]
+        # -------- would-be h-prior at t+1 under current belief -------- 
+        ph_at_tp1, qh_tp1 = None, None
+        qh_t, qz_t, a_t = qs_t.h_mean, qs_t.z_mean, qs_t.a
+        if s_tp1 is not None:
+            ph_at_tp1 = self.transition_model(qh_t, qz_t, a_t)
+            qh_tp1 = s_tp1.h_mean
 
         # for k, thing in dict(
-        #     ps_t=ps_t, 
+        #     ph_t=ph_t, 
         #     qs_t=qs_t, 
         #     po_t=o_true,
         #     o_pred=o_pred,
-        #     prev_ps_t=prev_ps_t,
-        #     next_qs_t=next_qs_t,
+        #     prev_ph_t=prev_ph_t,
+        #     next_qh_t=next_qh_t,
         # ).items():
         #     if thing is not None:
         #         print(k, thing.min(), thing.max())
 
         total_energy = self.compute_vfe_node(
-            ps_t=ps_t, 
-            qs_t=qs_t, 
-            po_t=o_true,
-            o_pred=o_pred,
-            prev_ps_t=prev_ps_t,
-            next_qs_t=next_qs_t,
+            qh_t=qh_t,
+            ph_t=ps_t.h_mean,
+            ph_at_tp1=ph_at_tp1,
+            qh_tp1=qh_tp1,
+            ph_from_tm1=ph_from_tm1,
+            qh_tm1=qh_tm1,
+            lat_o_pred=lat_o_pred,
+            lat_o_true=lat_o_true,
         )
 
         if backprop_belief:
+            qs_t = self.states_cache[timestep]
             self.param_learning(optimizer=self.beliefs_optimizer, loss=total_energy)
+            # print('beliefs updated')
 
         return total_energy
     
@@ -448,27 +499,27 @@ class Agent(nn.Module):
         total_efe = {}
         for i in range(max_policies_sampled):
             pi = policies[i].unsqueeze(0)  # shape: (1, policy_dim)
-            ps_t = self.states_cache[self.curr_timestep]
+            ph_t = self.states_cache[self.curr_timestep]
 
             efe = 0
             for t in range(horizon):
                 # Predict next state
-                ps_next = self.transition_model(ps_t, pi)
+                ps_next = self.transition_model(ph_t, pi)
 
                 # Predict observation
-                po_next = self.state_decoder(ps_next)
+                po_next = self.z_decoder(ps_next)
                 o_dist = Normal(po_next, 1.0)
                 o_sample = o_dist.rsample()
 
                 # epistemic value
-                qs_next = self.state_encoder(o_sample)
+                qs_next = self.z_encoder(o_sample)
                 epistemic = self.kl_divergence(qs_next, ps_next)
 
                 # instrumental value
                 energy_obs = self.log_likelihood(o_target, po_next)  # for now, very simple calc
 
                 efe += epistemic - energy_obs
-                ps_t = ps_next.detach()  # move to next state (prevent backprop across time)
+                ph_t = ps_next.detach()  # move to next state (prevent backprop across time)
 
             total_efe[i] = efe
 
@@ -478,4 +529,3 @@ class Agent(nn.Module):
         """
         Compute EFE. See what to do first
         """
-

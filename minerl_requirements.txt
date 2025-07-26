@@ -1,0 +1,11 @@
+minerl @ git+https://github.com/minerllabs/minerl
+numpy
+uvicorn
+fastapi
+pydantic
+gym3
+torch
+attrs
+opencv-python
+mineclip @ git+https://github.com/MineDojo/MineCLIP
+tensorboard

@@ -3,20 +3,23 @@ This module is meant to encapsulate the entire agent.
 Its scope contains all its components.
 Its methods controls the flow of everything.
 """
-import copy
+import json
 import logging
 import random
 from pathlib import Path
 
+import cv2
 import numpy as np
+import requests
 import torch
 from gym3.types import DictType
+from lib.action_head import make_action_head
 from lib.action_mapping import CameraHierarchicalMapping
 from lib.actions import ActionTransformer
-from torch import nn
-from transitions import TransitionModel
-
 from mineclip import MineCLIP
+from state import StateNode
+from torch import nn
+from worldmodel import WorldModel
 
 ACTION_TRANSFORMER_KWARGS = dict(
     camera_binsize=2,
@@ -50,11 +53,14 @@ class Agent(nn.Module):
 
     For now, only amortized inference will be supported. For research purposes i will try and make non-amortized easily
     integrable with the overall flow. (not happening bud)
+
+    TODO clean up agent responsibilities once we have moved to a baseline architecture we can play with
     """
 
     def __init__(self,
         clip_config=None,
         num_policies=None,
+        state_depth=1,  # state depth, basically num of recurrent layers
         history=3,
     ):
         """
@@ -67,17 +73,12 @@ class Agent(nn.Module):
         # admin stuff
         super().__init__()
 
-        self.action_mapper = CameraHierarchicalMapping(n_camera_bins=11)
-        action_space = self.action_mapper.get_action_space_update()
-        action_space = DictType(**action_space)
-
-        self.action_transformer = ActionTransformer(**ACTION_TRANSFORMER_KWARGS)
-
-
         path = clip_config.pop('ckpt_path', None)
         image_dim = clip_config.get('image_feature_dim', 512)
         self.amortized_inf = True
         self.history = history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
+        self.state_depth = state_depth
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # observations and states cache.
         self.states_cache = {}
@@ -115,26 +116,60 @@ class Agent(nn.Module):
             nn.ReLU()
         )  # P(z|h)
 
-        # read the name
-        self.transition_model = TransitionModel(
-            z_dim=512,
-            a_dim=12,
-            h_dim=512
-            
-        ) # P(s_t+1 | s_t)
-        # policy dist. init
-        self.policy_model = nn.Sequential(
-            nn.Linear(image_dim, image_dim),
-            # nn.LayerNorm(image_dim),
+        # # read the name
+        # self.transition_model = TransitionModel(
+        #     z_dim=512,
+        #     a_dim=512,
+        #     h_dim=512
+        # ) # P(s_t+1 | s_t)
+
+        # trying to use similar architecture for WM and Transition model, woop TODO just inject a TODO backhere
+        self.transition_model = WorldModel(
+            recurrence_type="transformer",
+            attention_memory_size=2,
+            hidsize=512,
+            n_recurrence_layers=state_depth,
+            timesteps=1,
+        )
+        # for now, concat the latent prev action and latent obs together, then do preprocessing to map it to the 
+        # h dim: for now just 1024 -> 512
+        self.a_z_encoder = nn.Sequential(
+            nn.Linear(2 * image_dim, image_dim),
+            nn.LayerNorm(image_dim),
             nn.ReLU()
         )
+
+        self.world_model = WorldModel(
+            recurrence_type="transformer",
+            attention_memory_size=2,
+            hidsize=512,
+            n_recurrence_layers=state_depth,
+            timesteps=1,
+        )
+
+        self.action_mapper = CameraHierarchicalMapping(n_camera_bins=11)
+        action_space = self.action_mapper.get_action_space_update()
+        self.action_space = DictType(**action_space)
+        self.action_transformer = ActionTransformer(**ACTION_TRANSFORMER_KWARGS)
+
+        self.pi_head = make_action_head(
+            self.action_space,
+            self.transition_model.output_latent_size(),
+            temperature=2.0
+        )
+
+        self._dummy_first = torch.from_numpy(np.array((False,))).to(device).unsqueeze(1)
 
         params = (
             list(self.z_encoder.parameters()) +
             list(self.z_decoder.parameters()) +
             list(self.transition_model.parameters())
+            # TODO: decide what to do with wm parameters
         )
-        self.model_optimizer = torch.optim.SGD(params, lr=0.05)
+        self.inference_optimizer = torch.optim.AdamW(params, lr=0.005)
+
+        params = list(self.world_model.parameters())
+        self.wm_optimizer = torch.optim.AdamW(params, lr=0.005)
                 
         self.num_policies = num_policies
         self.state_dicts = {}
@@ -176,17 +211,26 @@ class Agent(nn.Module):
             if t not in self.states_cache:
                 lat_o = self.obs_encoder.forward_image_features(o)
                 z = self.z_encoder(lat_o)
-                if t - 1 not in self.states_cache: # we have no prior hidden state
-                    h = self.h_encoder(z)  
-                else:
+                if t == 0: # we have no prior hidden state
+                    initial = self.world_model.initial_state(batchsize=1)  # list[tuple[None, tuple[torch.Tensor]]]
+                    h_masks, h_states = StateNode.unpack_h(initial)
+                    self.world_model.state_mask = list(h_masks)
+                    h_states = list(h_states)
+
+                else:  # let transition model predict
+                    # TODO debug ts
                     state = self.states_cache[t - 1]
-                    h = self.transition_model(
-                        prev_h=state.h_mean,
-                        prev_z=state.z_mean,
-                        prev_lat_a=state.a
+                    a, z = state.a, state.z_mean
+                    h = list(zip([None] * self.state_depth, state.get_h_states()))
+                    a_z = torch.concat([z, z], dim=1)  # TODO right now just dummy a
+                    x = self.a_z_encoder(a_z).unsqueeze(1)
+                    _, h = self.transition_model(
+                        x, h, context={'first': self._dummy_first}
                     )
+                    _, h_states = StateNode.unpack_h(h)
+
                 self.states_cache[t] = StateNode(
-                    h_value=h,
+                    h_state=h_states,
                     z_value=z,
                     a_dim=512,
                 )
@@ -199,7 +243,7 @@ class Agent(nn.Module):
         # seperate optimizer over beliefs over states
         all_params = []
         for s in self.states_cache.values():
-            all_params.append(s.h_mean)
+            all_params.extend(list(s.h_modules.parameters()))
             all_params.append(s.z_mean)
         self.beliefs_optimizer = torch.optim.SGD(all_params, lr=0.005)
 
@@ -208,20 +252,17 @@ class Agent(nn.Module):
             ):
         """
         Order of execution:
-            Perception:
+            Inference:
                 1. Encode current observation into a latent observation.
-                2. Encode latent observation into belief about latent state at current timestep t.
-            Belief updating:
-                3. From existing beliefs in the belief cache, calculate VFE and do belief updates via backprop
-            Parameter learning:
-                4. Every n steps, update model parameters
+                2. Use it to update recurrent beliefs h at timestep t
+                3. From existing beliefs h in the belief cache, do belief updating
+                4. Every n steps of belief updating, calculate VFE and backprop model parameters
+                5. Backprop world model based on new sequence of past states post-vfe
             Planning:
-                5. Sample the several policies from the new model.
-                6. Do rollout(s), and calculate EFE of policy
-                7. Backprop to update beliefs over policies
-                8. Repeat 5-7 until convergence.
-            Action:
-                8. Sample a policy from the final distribution over policies, then take action
+                6. Use WM to generate prior over future states
+                7. Sample a policy (params) for action head, then do rollouts and calculate EFE
+                8. Use EFE to update belief over policies
+                9. Repeat until convergence, then sample policy and predict next action
         Then increment timestep by 1.
         """
         # 1 - 4:
@@ -257,7 +298,7 @@ class Agent(nn.Module):
         self,
         max_update_steps: int = 100,
         update_rounds: int = 10,
-        print_statements: bool = False,
+        print_statements: bool = True,
     ) -> float:
         """
         Run the inference procedure for belief updates and model parameter learning.
@@ -270,19 +311,11 @@ class Agent(nn.Module):
         Returns:
             float: Final VFE after inference and (optional) learning.
         """
-        # save prior beliefs as P (fixed reference)
-        # prev_vfe = float('inf')
-        # stable_steps = 0
-        amortized_reset = True
 
         for step in range(max_update_steps):
-            # for every amortized reset called, which is after one parameter learning session, recompute latent obs and 
-            # beliefs over states, then optim wrap them.
-            if amortized_reset:
+            if step == 0:  # first step, percieve for latest prior and wrap in optim
                 self.update_states_cache()
                 self.optim_wrap()
-                amortized_reset = False
-            if step == 0:  # first step, initialize frozen priors.
                 P_states = {k: s.clone(freeze=True) for k, s in self.states_cache.items()}
 
             # random timestep selection, to run inference on
@@ -292,7 +325,7 @@ class Agent(nn.Module):
             P_states = {k: s.clone(detach=True, freeze=True) for k, s in P_states.items()}
             self.latent_observation_cache = {k: o.clone().detach() for k, o in self.latent_observation_cache.items()}
 
-            # every 'update_rounds', do param learning
+            # every 'update_rounds', do param learning (backprop_belief=True)
             if step % update_rounds == 0:
                 total_vfe = sum(
                     self.inference_step(
@@ -308,43 +341,43 @@ class Agent(nn.Module):
                 if self.amortized_inf:
                     # param learning for amortized case
                     self.param_learning(
-                        optimizer=self.model_optimizer,
+                        optimizer=self.inference_optimizer,
                         loss=total_vfe
                     )
-                    # if print_statements:
-                    #     print_params(self.z_decoder)
-                    #     print_params(self.z_encoder)
-                    #     print_params(self.transition_model)
-                    #     for t, s in self.states_cache.items():
-                    #         print('t', t, 's', s)
-                    #     print('-------------latent obs-------------')
-                    #     for t, l_o in self.latent_observation_cache.items():
-                    #         print('t', t, 'l_o', l_o)
-                    #     print('----------------model updated---------------')
-                    #     print('-------------latent obs-------------')
-                    #     for t, l_o in self.latent_observation_cache.items():
-                    #         print('t', t, 'l_o', l_o)
-                    #     print_params(self.z_decoder)
-                    #     print_params(self.z_encoder)
-                    #     print_params(self.transition_model)
-                    #     for t, s in self.states_cache.items():
-                    #         print('t', t, 's', s)
 
-                # else:
-                #     # check for VFE convergence in non-amortized case
-                #     if abs(prev_vfe - current_vfe) < vfe_tol:
-                #         stable_steps += 1
-                #         if stable_steps >= patience:
-                #             print("Converged.")
-                #             self.param_learning(current_vfe)
-                #             return current_vfe
-                #     else:
-                #         stable_steps = 0  # Reset if VFE jumped
+        # after all is said and done, wm learning based on beliefs. observes over whole state cache. stack along ficticious time dimension
+        if len(self.states_cache) != 1:  # TODO better way to run this only if states cache has past timesteps
+            z = self.states_cache[max(self.states_cache.keys())].z_mean
+            z = z.unsqueeze(1)
+            all_h = [[] for _ in range(self.state_depth)]
+            # compile from all timesteps, into all_h
+            for t, s in self.states_cache.items():
+                if t != max(self.states_cache):
+                    h = s.get_h_states()  # [(h_key, h_states), ...]
+                    [all_h[depth].append(h[depth]) for depth in range(self.state_depth)]
 
-                #     prev_vfe = current_vfe
+            h_states = []
+            for key_val_pairs in all_h:
+                h_keys, h_values = zip(*key_val_pairs)  # unzip into two lists
+                h_keys = torch.concat(h_keys, dim=1)     # shape: [..., t, ...]
+                h_values = torch.concat(h_values, dim=1) # shape: [..., t, ...]
+                h_states.append((h_keys, h_values))
+
+            state_mask = self.world_model.state_mask
+            h = list(zip(state_mask, h_states))
+            _, pred_state_out = self.world_model(z, h, context={'first': self._dummy_first})
+            _, pred_h = StateNode.unpack_h(pred_state_out)
+
+            pred_h = StateNode.flatten(pred_h)
+            h_states = StateNode.flatten(h_states)
+            # loss against priors
+            total_loss = self.kl_divergence(
+                h_states, pred_h
+            ).sum()
+            self.param_learning(self.wm_optimizer, total_loss)
 
         print("Reached max inference steps.")
-        # print('self.states_cache timesteps:', self.states_cache.keys())
+
         return total_vfe
 
     def compute_vfe_node(
@@ -412,9 +445,11 @@ class Agent(nn.Module):
         ):
         """
         Step function to perform belief updating over cache of beliefs.
-
+        TODO: currently naming is messy, comments are sparse. see if you can make it clear what does what
         For each step of belief updating, we isolate one node, calculate the corresponding messages
         fed to it, then update it. 
+        TODO 2: HOLY FUCK THIS IS MESSY
+        TODO 3: SO MUCH REPEATED CODE GOD
 
         Args:
             timestep: Selected timestep with which we perform inference for
@@ -434,15 +469,31 @@ class Agent(nn.Module):
         # -------- prior from t-1 -------- 
         ph_from_tm1, qh_tm1 = None, None
         if s_tm1 is not None:
-            qh_tm1, qz_tm1, a_tm1 = s_tm1.h_mean, s_tm1.z_mean, s_tm1.a
-            ph_from_tm1 = self.transition_model(qh_tm1, qz_tm1, a_tm1)
+            qh_tm1, qz_tm1, a_tm1 = s_tm1.get_h_states(), s_tm1.z_mean, s_tm1.a
+            # TODO for now dummy action
+            a_z = torch.concat([qz_tm1, qz_tm1], dim=1)
+            x = self.a_z_encoder(a_z).unsqueeze(1)
+            h = list(zip([None] * self.state_depth, qh_tm1))
+            _, h = self.transition_model(
+                x, h, context={'first': self._dummy_first}
+            )
+            _, ph_from_tm1 = StateNode.unpack_h(h)  # annoying 1 size tuple if state depth one
+            ph_from_tm1 = StateNode.flatten(ph_from_tm1[0])
 
         # -------- would-be h-prior at t+1 under current belief -------- 
         ph_at_tp1, qh_tp1 = None, None
-        qh_t, qz_t, a_t = qs_t.h_mean, qs_t.z_mean, qs_t.a
+        qh_t, qz_t, a_t = qs_t.get_h_states(), qs_t.z_mean, qs_t.a
         if s_tp1 is not None:
-            ph_at_tp1 = self.transition_model(qh_t, qz_t, a_t)
-            qh_tp1 = s_tp1.h_mean
+            # TODO for now dummy action
+            a_z = torch.concat([qz_t, qz_t], dim=1)
+            x = self.a_z_encoder(a_z).unsqueeze(1)
+            h = list(zip([None] * self.state_depth, qh_t))
+            _, h = self.transition_model(
+                        x, h, context={'first': self._dummy_first}
+                    )
+            _, ph_at_tp1 = StateNode.unpack_h(h)
+            ph_at_tp1 = StateNode.flatten(ph_at_tp1[0])
+            qh_tp1 = s_tp1.flattened_h_states
 
         # for k, thing in dict(
         #     ph_t=ph_t, 
@@ -456,12 +507,12 @@ class Agent(nn.Module):
         #         print(k, thing.min(), thing.max())
 
         total_energy = self.compute_vfe_node(
-            qh_t=qh_t,
-            ph_t=ps_t.h_mean,
+            qh_t=qs_t.flattened_h_states,
+            ph_t=ps_t.flattened_h_states,
             ph_at_tp1=ph_at_tp1,
             qh_tp1=qh_tp1,
             ph_from_tm1=ph_from_tm1,
-            qh_tm1=qh_tm1,
+            qh_tm1=s_tm1.flattened_h_states if s_tm1 is not None else None,
             lat_o_pred=lat_o_pred,
             lat_o_true=lat_o_true,
         )
@@ -469,7 +520,6 @@ class Agent(nn.Module):
         if backprop_belief:
             qs_t = self.states_cache[timestep]
             self.param_learning(optimizer=self.beliefs_optimizer, loss=total_energy)
-            # print('beliefs updated')
 
         return total_energy
     
@@ -529,3 +579,66 @@ class Agent(nn.Module):
         """
         Compute EFE. See what to do first
         """
+
+
+resolution = [160, 256]
+clip_config = {
+    'arch': 'vit_base_p16_fz.v2.t2',
+    'hidden_dim': 512,
+    'image_feature_dim': 512,
+    'mlp_adapter_spec': 'v0-2.t0',
+    'pool_type': 'attn.d2.nh8.glusw',
+    'resolution': resolution,
+    'ckpt_path': '/mnt/e/AutonoMC/weights/attn.pth'
+}
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+agent = Agent(clip_config=clip_config).to(device)
+
+noop_action = {
+    "attack": [0],
+    "back": [0],
+    "forward": [0],
+    "jump": [0],
+    "left": [0],
+    "right": [0],
+    "sneak": [0],
+    "sprint": [0],
+    "use": [0],
+    "drop": [0],
+    "inventory": [0],
+    "hotbar.1": [0],
+    "hotbar.2": [0],
+    "hotbar.3": [0],
+    "hotbar.4": [0],
+    "hotbar.5": [0],
+    "hotbar.6": [0],
+    "hotbar.7": [0],
+    "hotbar.8": [0],
+    "hotbar.9": [0],
+    "camera": [[0.0, 0.0]]
+}
+
+for i in range(10):
+    response = requests.post(
+        'http://localhost:8000/take_step',
+        json={
+            'action': noop_action,
+        }
+    )
+
+    return_dict = json.loads(response.content)
+    print('return_dict', return_dict['obs'].keys())
+    print('return dict obs life stats', return_dict['obs']['life_stats'])
+    print('return dict obs use_item', return_dict['obs']['use_item'])
+    pic = np.asarray(return_dict['obs']['pov']).astype(np.uint8)
+
+    arr = cv2.resize(pic, (256, 160), interpolation=cv2.INTER_LINEAR)
+    arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+
+    images = arr[np.newaxis, :, :, :]
+    images = torch.from_numpy(images).to(device)
+    images = images.permute(0, 3, 1, 2)
+    print('images shape', images.shape, images.device)
+
+    agent.forward(observations=images)

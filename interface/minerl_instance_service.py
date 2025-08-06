@@ -77,6 +77,7 @@ class MinecraftInstance:
         self.sample_act = self.env.action_space.noop()
         self.router = APIRouter()
         self.router.add_api_route("/take_step", self.take_step, methods=["POST"])
+        # self.router.add_api_route("/get_action_space", self.get_action_space, methods=["GET"])
 
     def take_step(self, req: ActionRequest):
         action_dict = {

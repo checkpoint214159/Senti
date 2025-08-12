@@ -125,33 +125,16 @@ class WorldModel(nn.Module):
     def output_latent_size(self):
         return self.hidsize
 
-    def forward(self, x, state_in, context):
+    def forward(self, x, state_mask, xf_state, context):
         """
         Runs forward for WorldModel. Takes in previous state and current observation.
         """
         first = context["first"]
-
-        # # for now, purge image preprocessing etc. This will be done by OpenAI CLIP.
-        # # this will butcher the model, but at least some kind of behaviour might emerge?
-        # # idk TODO see how
-        # x = self.img_preprocess(ob["img"])
-        # print('x after preprocess', x.shape)
-        # x = self.img_process(x)
-        # print('x after img_process', x.shape)
-
-        # if self.diff_obs_process:
-        #     print('diff_obs_process??')
-        #     processed_obs = self.diff_obs_process(ob["diff_goal"])
-        #     print('processed_obs.shape', processed_obs.shape)
-        #     x = processed_obs + x
-
         if self.pre_lstm_ln is not None:
             x = self.pre_lstm_ln(x)
 
         if self.recurrent_layer is not None:
-            x, state_out = self.recurrent_layer(x, first, state_in)
-        else:
-            state_out = state_in
+            x, state_mask, xf_state = self.recurrent_layer(x, first, state_mask, xf_state)
 
         x = F.relu(x, inplace=False)
 
@@ -159,8 +142,8 @@ class WorldModel(nn.Module):
         x = self.final_ln(x)
         pi_latent = vf_latent = x
         if self.single_output:
-            return pi_latent, state_out
-        return (pi_latent, vf_latent), state_out
+            return pi_latent, state_mask, xf_state
+        return (pi_latent, vf_latent), state_mask, xf_state
 
     def initial_state(self, batchsize):
         if self.recurrent_layer:

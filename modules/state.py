@@ -71,8 +71,7 @@ class StateNode(nn.Module):
 
         # ---- a_t (latent action in some higher level action space) ----
         self.a_dim = a_value.shape[-1] if a_value is not None else a_dim
-        a_init = a_value if a_value is not None else torch.zeros((1, 1, self.a_dim), device=device)
-        self.a = a_init
+        self.a = a_value
 
         if learn_std:  # assume no for debugging now
             self.z_log_std = nn.Parameter(torch.ones(self.z_dim, device=device) * torch.log(torch.tensor(init_std)))
@@ -135,11 +134,11 @@ class StateNode(nn.Module):
         """
         h_states = [x for tpl in h_states for x in tpl]
         h_states = torch.stack(h_states)
-        print('HI IM HERE TO REMIND YOU TO CHECK IF THIS GENERALIZES TO MULTIPLE DEPTHS')
+        # print('HI IM HERE TO REMIND YOU TO CHECK IF THIS GENERALIZES TO MULTIPLE DEPTHS')
         return h_states
     
     @classmethod
-    def unpack_h(self, h):
+    def unpack_mask_states(self, h):
         """
         Helper function to unpack the return of the WorldModel, that is [(state_mask, h_states), (state_mask, h_states), ...]
         Will return state_mask and h_states respectively.

@@ -111,21 +111,23 @@ class ResidualRecurrentBlocks(nn.Module):
             ]
         )
 
-    def forward(self, x, first, state):
+    def forward(self, x, first, state_masks: list, xf_states: list):
         """
         Args:
             x: non-recurrent input to blocks
-            first: 
-            state: List of recurrent state inputs, length equal to number of blocks
+            first: idk just dummy
+            state_mask: Depthwise list of state masks (split off from original implementation)
+            xf_state: Depthwise list of tuple (h_key, h_value)
         """
-        state_out = []
-        assert len(state) == len(
+        assert len(state_masks) == len(
             self.blocks
-        ), f"Length of state {len(state)} did not match length of blocks {len(self.blocks)}"
-        for block, _s_in in zip(self.blocks, state):
-            x, _s_o = block(x, first, _s_in)
-            state_out.append(_s_o)
-        return x, state_out
+        ), f"Length of state {len(state_masks)} did not match length of blocks {len(self.blocks)}"
+        assert len(state_masks) == len(xf_states), 'Assertion failed, length of masks and states must be equal.'
+        for idx, (block, state_mask_in, xf_state_in) in enumerate(zip(self.blocks, state_masks, xf_states)):
+            x, state_mask_out, xf_state_out = block(x, first, state_mask_in, xf_state_in)
+            xf_states[idx] = xf_state_out
+            state_masks[idx] = state_mask_out
+        return x, state_masks, xf_states
 
     def initial_state(self, batchsize):
         if "lstm" in self.recurrence_type:
@@ -195,14 +197,15 @@ class ResidualRecurrentBlock(nn.Module):
                 mask=attention_mask_style,
             )
 
-    def forward(self, x, first, state):
+    def forward(self, x, first, state_mask, xf_state):
         residual = x
         x = self.pre_r_ln(x)
-        x, state_out = recurrent_forward(
+        x, state_mask, xf_state = recurrent_forward(
             self.r,
             x,
             first,
-            state,
+            state_mask,
+            xf_state,
             reverse_lstm=self.recurrence_type == "multi_layer_bilstm" and (self.block_number + 1) % 2 == 0,
         )
         if self.is_residual and "lstm" in self.recurrence_type:  # Transformer already residual.
@@ -213,11 +216,12 @@ class ResidualRecurrentBlock(nn.Module):
             x = self.mlp1(self.mlp0(x))
             if self.is_residual:
                 x = x + residual
-        return x, state_out
+        return x, state_mask, xf_state
 
 
-def recurrent_forward(module, x, first, state, reverse_lstm=False):
+def recurrent_forward(module, x, first, state_mask, xf_state, reverse_lstm=False):
     if isinstance(module, nn.LSTM):
+        raise NotImplementedError('Updated state and mask incompatible with LSTM arch, TODO fix this')
         if state is not None:
             # In case recurrent models do not accept a "first" argument we zero out the hidden state here
             mask = 1 - first[:, 0, None, None].to(th.float)
@@ -231,7 +235,7 @@ def recurrent_forward(module, x, first, state, reverse_lstm=False):
         state_out = tree_map(lambda _s: _s.transpose(0, 1), state_out)  # B, NL, H
         return x, state_out
     else:
-        return module(x, first, state)
+        return module(x, first, state_mask, xf_state)
 
 
 def _banded_repeat(x, t):

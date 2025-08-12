@@ -4,9 +4,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
-
-from lib.action_head import (CategoricalActionHead, DiagGaussianActionHead,
-                             DictActionHead)
+from lib.action_head import (
+    CategoricalActionHead,
+    DiagGaussianActionHead,
+    DictActionHead,
+)
 
 
 def store_args(method):

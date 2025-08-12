@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 from gym3.types import DictType, Discrete, Real, TensorType, ValType
+from lib.tree_util import tree_map
 
 LOG0 = -100
 
@@ -20,7 +21,11 @@ def fan_in_linear(module: nn.Module, scale=1.0, bias=True):
 
 
 class ActionHead(nn.Module):
-    """Abstract base class for action heads compatible with forc"""
+    """
+    Abstract base class for action heads compatible with forc
+    Edited to include action transformer for convenience
+    """
+    stochastic=False
 
     def forward(self, input_data: torch.Tensor) -> Any:
         """
@@ -158,7 +163,7 @@ class CategoricalActionHead(ActionHead):
         if self.linear_layer is not None:
             init.orthogonal_(self.linear_layer.weight, gain=0.01)
             init.constant_(self.linear_layer.bias, 0.0)
-            finit.fan_in_linear(self.linear_layer, scale=0.01)
+            init.fan_in_linear(self.linear_layer, scale=0.01)
 
     def forward(self, input_data: torch.Tensor, mask=None) -> Any:
         if self.linear_layer is not None:
@@ -258,6 +263,31 @@ class DictActionHead(nn.ModuleDict):
 
     def kl_divergence(self, logits_q: torch.Tensor, logits_p: torch.Tensor) -> torch.Tensor:
         return sum(subhead.kl_divergence(logits_q[k], logits_p[k]) for k, subhead in self.items())
+    
+    def predict(
+            self,
+            pi_h,
+            mask=None,
+            stochastic: bool = True,
+            taken_action=None,
+            ):
+        """
+        Runs forward and other methods to get logits of action
+        """
+        pi_logits = self(pi_h, mask=mask)
+
+        if taken_action is None:
+            ac = self.pi_head.sample(pi_logits, deterministic=not stochastic)
+        else:
+            ac = tree_map(lambda x: x.unsqueeze(1), taken_action)
+
+        # log_prob = self.pi_head.logprob(ac, pi_logits)
+        # assert not torch.isnan(log_prob).any()
+
+        # After unsqueezing, squeeze back to remove fictitious time dimension
+        ac = tree_map(lambda x: x[:, 0], ac)
+        print('ac after tree map, prolly removing time dim', ac)
+        return ac
 
 
 def make_action_head(ac_space: ValType, pi_out_size: int, temperature: float = 1.0):
@@ -273,3 +303,19 @@ def make_action_head(ac_space: ValType, pi_out_size: int, temperature: float = 1
     elif isinstance(ac_space, DictType):
         return DictActionHead({k: make_action_head(v, pi_out_size, temperature) for k, v in ac_space.items()})
     raise NotImplementedError(f"Action space of type {type(ac_space)} is not supported")
+
+def create_action_head(n_camera_bins,
+                       latent_size,
+                       mapper_class,
+                       temperature):
+    action_mapper = mapper_class(n_camera_bins=n_camera_bins)
+    action_space = action_mapper.get_action_space_update()
+    action_space = DictType(**action_space)
+
+    action_head = make_action_head(
+            action_space,
+            latent_size,
+            temperature=temperature
+        )
+    
+    return action_head

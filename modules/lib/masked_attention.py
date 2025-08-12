@@ -158,9 +158,8 @@ class MaskedAttention(nn.Module):
             state = tree_map(lambda x: x.to(device), state)
         return state_mask, state
 
-    def forward(self, x, first, state):
+    def forward(self, x, first, state_mask, xf_state):
         """Forward propagation of a single layer"""
-        state_mask, xf_state = state
         t = first.shape[1]
         if self.mask == "clipped_causal":
             new_mask, state_mask = get_mask(
@@ -175,7 +174,7 @@ class MaskedAttention(nn.Module):
             self.orc_block.attn.mask = new_mask
         output, xf_state = self.orc_block(x, xf_state)
 
-        return output, (state_mask, xf_state)
+        return output, state_mask, xf_state
 
     def get_log_keys(self):
         # These are logged in xf.SelfAttentionLayer

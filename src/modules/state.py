@@ -1,6 +1,8 @@
+import copy
+
 import torch
 import torch.nn as nn
-import copy
+
 
 class RecurrentMemory(nn.Module):
     def __init__(self, key: torch.Tensor, value: torch.Tensor):

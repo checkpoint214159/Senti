@@ -22,6 +22,21 @@ from state import StateNode
 from torch import nn
 from worldmodel import WorldModel
 
+
+def set_seed(seed: int = 42):
+    random.seed(seed)                  # Python random module
+    np.random.seed(seed)               # NumPy
+    torch.manual_seed(seed)            # CPU
+    torch.cuda.manual_seed(seed)       # GPU
+    torch.cuda.manual_seed_all(seed)   # all GPUs
+
+    # For deterministic behavior (may be slower!)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# Usage
+set_seed(42)
+
 ACTION_TRANSFORMER_KWARGS = dict(
     camera_binsize=2,
     camera_maxval=10,
@@ -128,10 +143,10 @@ class Agent(nn.Module):
             nn.LayerNorm(self.h_dim),
             nn.ReLU()
         )
-
+        self.wm_attention_size = self.history + self.timestep_size
         self.world_model = WorldModel(
             recurrence_type="transformer",
-            attention_memory_size=self.history + self.timestep_size,
+            attention_memory_size=self.wm_attention_size,
             hidsize=self.h_dim,
             n_recurrence_layers=state_depth,
             timesteps=self.timestep_size,
@@ -341,6 +356,11 @@ class Agent(nn.Module):
             print('h states after', h_states)
             print('x shape', x.shape)
             print('xf_state', [[s.shape for s in something] for something in h_states])
+            # TODO isnt the pruning before feeding into x handled by something else? either ways do it here
+            most_recent_h = self.wm_attention_size - x.shape[1]
+            h_states = [[h[:, -most_recent_h:, ...] for h in depth] for depth in h_states]
+            print('h states after pruning', h_states)
+            print('xf_states after pruning', [[s.shape for s in something] for something in h_states])
             _, state_mask, pred_h = self.world_model(x,
                 state_mask=init_mask,
                 xf_state=h_states,
@@ -351,39 +371,10 @@ class Agent(nn.Module):
             pred_h = StateNode.flatten(pred_h)
             prior_h = StateNode.flatten(h_states)
 
-        # after all is said and done, wm learning based on beliefs. observes over whole state cache. stack along ficticious time dimension
-        # if len(self.states_cache) != 1:  # TODO better way to run this only if states cache has past timesteps
-        #     z = self.states_cache[max(self.states_cache.keys())].z_mean
-        #     z = z.unsqueeze(1)
-        #     all_h = [[] for _ in range(self.state_depth)]
-        #     # compile from all timesteps, into all_h
-        #     for t, s in self.states_cache.items():
-        #         if t != max(self.states_cache):
-        #             h = s.get_h_states()  # [(h_key, h_states), ...]
-        #             [all_h[depth].append(h[depth]) for depth in range(self.state_depth)]
-        #     print('length of each list within all_h', [len(depth) for depth in all_h])
-        #     h_states = []
-        #     for key_val_pairs in all_h:  # at each depth
-        #         h_keys, h_values = zip(*key_val_pairs)  # unzip into two lists
-        #         h_keys = torch.concat(h_keys, dim=1)     # shape: [..., t, ...]
-        #         h_values = torch.concat(h_values, dim=1) # shape: [..., t, ...]
-        #         h_states.append((h_keys, h_values))
-            
-        #     print('shape of keys n values', [[t.shape for t in thing] for thing in h_states])
-        #     state_mask = self.world_model.state_mask
-        #     print('before step state_mask wm', state_mask)
-        #     h = list(zip(state_mask, h_states))
-        #     _, pred_state_out = self.world_model(z, h, context={'first': self._dummy_first})
-        #     state_mask, pred_h = StateNode.unpack_mask_states(pred_state_out)
-        #     print('after step state_mask wm', state_mask)
-        #     self.world_model.state_mask = state_mask
-
-        #     pred_h = StateNode.flatten(pred_h)
-        #     h_states = StateNode.flatten(h_states)
-            # loss against priors
             total_loss = self.loss.kl_divergence(
                 prior_h, pred_h
-            ).sum()
+            ).mean()
+            print('total wm loss?', total_loss)
             self.optimizer_registry.do_step(
                 key='wm',
                 loss=total_loss)

@@ -1,8 +1,8 @@
-from modules.worldmodel import WorldModel
-
 import pytest
 import torch
 from mineclip import MineCLIP
+
+from modules.worldmodel import WorldModel
 
 # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -v
 

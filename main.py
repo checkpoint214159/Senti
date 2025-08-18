@@ -1,19 +1,20 @@
 # main script to call training for now
 
-import minedojo
-# import matplotlib.pyplot as plt
-from PIL import Image
-import time
-import cv2
 import glob
-import numpy as np
-
 import hashlib
+import time
+
+import cv2
 import hydra
+import minedojo
+import numpy as np
 import torch
 from hydra import compose, initialize
-from omegaconf import OmegaConf
 from mineclip import MineCLIP
+from omegaconf import OmegaConf
+
+# import matplotlib.pyplot as plt
+from PIL import Image
 
 num_iters = 500
 load_resolution = [1072, 1920]

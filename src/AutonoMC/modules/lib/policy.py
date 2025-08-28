@@ -5,14 +5,14 @@ from typing import Dict, Optional
 import numpy as np
 import torch as th
 from gym3.types import DictType
-from lib.action_head import make_action_head
-from lib.action_mapping import CameraHierarchicalMapping
-from lib.impala_cnn import ImpalaCNN
-from lib.misc import transpose
-from lib.normalize_ewma import NormalizeEwma
-from lib.scaled_mse_head import ScaledMSEHead
-from lib.tree_util import tree_map
-from lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
+from AutonoMC.modules.lib.action_head import make_action_head
+from AutonoMC.modules.lib.action_mapping import CameraHierarchicalMapping
+from AutonoMC.modules.lib.impala_cnn import ImpalaCNN
+from AutonoMC.modules.lib.misc import transpose
+from AutonoMC.modules.lib.normalize_ewma import NormalizeEwma
+from AutonoMC.modules.lib.scaled_mse_head import ScaledMSEHead
+from AutonoMC.modules.lib.tree_util import tree_map
+from AutonoMC.modules.lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
 from torch import nn
 from torch.nn import functional as F
 

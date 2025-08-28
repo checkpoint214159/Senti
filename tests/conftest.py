@@ -2,9 +2,12 @@ import pytest
 import torch
 from mineclip import MineCLIP
 
-from modules.worldmodel import WorldModel
+from AutonoMC.modules.worldmodel import WorldModel
 
 # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -v
+
+# ---------------------------------------------
+#         model fixtures and defaults 
 
 # default configs for clip
 resolution = [160, 256]
@@ -44,32 +47,52 @@ src_transition_model = dict(
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-@pytest.fixture
-def make_mineclip():
-    def _make_mineclip(clip_config=None):
-        if clip_config is not None:
-            src_clip_config = clip_config
-        obs_encoder = MineCLIP(**src_clip_config)
-        path = src_clip_config.pop('ckpt_path', None)
+
+def _make_mineclip(clip_config=src_clip_config):
+    obs_encoder = MineCLIP(**clip_config)
+    path = clip_config.get("ckpt_path", None)
+    if path is not None:
         obs_encoder.load_ckpt(path, strict=True)
-        return obs_encoder
+    return obs_encoder
+
+@pytest.fixture
+def mineclip_factory():
+    """Returns a factory to build MineCLIP with custom configs."""
     return _make_mineclip
 
-@pytest.fixture
-def make_transition_model():
-    def _make_transition_model(transition_config=None):
-        if transition_config is not None:
-            src_transition_model = transition_config
-        transition_model = WorldModel(**src_transition_model)
-        return transition_model
-    return _make_transition_model
+@pytest.fixture(scope="session")
+def default_mineclip():
+    """One shared MineCLIP instance for the whole test session."""
+    return _make_mineclip()
+
+
+
+def _make_transition_model(transition_config=src_transition_model):
+    return WorldModel(**transition_config)
 
 @pytest.fixture
-def make_world_model():
-    def _make_world_model(wm_config=None):
-        if wm_config is not None:
-            src_wm_config = wm_config
-        wm = WorldModel(**src_wm_config)
-        return wm
+def transition_model_factory():
+    return _make_transition_model
+
+@pytest.fixture(scope="session")
+def default_transition_model():
+    return _make_transition_model()
+
+def _make_world_model(wm_config=src_wm_config):
+    return WorldModel(**wm_config)
+
+@pytest.fixture
+def world_model_factory():
     return _make_world_model
+
+@pytest.fixture(scope="session")
+def default_world_model():
+    return _make_world_model()
+
+# ---------------------------------------------
+#       optimizer, loss, etc. utilities
+
+
+
+# ---------------------------------------------
 

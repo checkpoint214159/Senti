@@ -2,7 +2,7 @@ import copy
 
 import torch
 import torch.nn.functional as F
-from lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
+from AutonoMC.modules.lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
 from torch import nn
 
 

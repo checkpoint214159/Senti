@@ -3,9 +3,9 @@ import functools
 import torch as th
 from torch import nn
 
-import lib.xf as xf
-from lib.minecraft_util import store_args
-from lib.tree_util import tree_map
+import AutonoMC.modules.lib.xf as xf
+from AutonoMC.modules.lib.minecraft_util import store_args
+from AutonoMC.modules.lib.tree_util import tree_map
 
 
 @functools.lru_cache()

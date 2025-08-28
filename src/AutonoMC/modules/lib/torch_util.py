@@ -16,8 +16,8 @@ import torch.distributions as dis
 import torch.nn.functional as F
 from torch import nn
 
-import lib.tree_util as tree_util
-from lib import misc
+import AutonoMC.modules.lib.tree_util as tree_util
+from AutonoMC.modules.lib import misc
 
 
 def contextmanager_to_decorator(cm):
@@ -33,7 +33,7 @@ def contextmanager_to_decorator(cm):
 
 
 def have_cuda():
-    return th.has_cuda
+    return th.backends.cuda.is_built()
 
 
 def default_device_type():

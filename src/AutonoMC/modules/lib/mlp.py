@@ -1,8 +1,8 @@
 import torch as th
 from torch import nn
 
-from lib import misc
-from lib import torch_util as tu
+from AutonoMC.modules.lib import misc
+from AutonoMC.modules.lib import torch_util as tu
 
 
 class MLP(nn.Module):

@@ -1,12 +1,13 @@
 from typing import Dict, Optional
 
-import lib.torch_util as tu
 import torch as th
-from lib.masked_attention import MaskedAttention
-from lib.minecraft_util import store_args
-from lib.tree_util import tree_map
 from torch import nn
 from torch.nn import functional as F
+
+import AutonoMC.modules.lib.torch_util as tu
+from AutonoMC.modules.lib.masked_attention import MaskedAttention
+from AutonoMC.modules.lib.minecraft_util import store_args
+from AutonoMC.modules.lib.tree_util import tree_map
 
 
 def get_module_log_keys_recursive(m: nn.Module):

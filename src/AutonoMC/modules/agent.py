@@ -12,15 +12,17 @@ import cv2
 import numpy as np
 import requests
 import torch
-from energy_calc import Loss
-from lib.action_head import create_action_head
-from lib.action_mapping import CameraHierarchicalMapping
-from lib.actions import ActionTransformer
 from mineclip import MineCLIP
-from optim import OptimRegistry
-from state import StateNode
 from torch import nn
-from worldmodel import WorldModel
+
+from AutonoMC.modules.agent_utils import Cache
+from AutonoMC.modules.lib.action_head import create_action_head
+from AutonoMC.modules.lib.action_mapping import CameraHierarchicalMapping
+from AutonoMC.modules.lib.actions import ActionTransformer
+from AutonoMC.modules.loss import EnergyAggregator
+from AutonoMC.modules.optim import OptimRegistry
+from AutonoMC.modules.state import StateNode
+from AutonoMC.modules.worldmodel import WorldModel
 
 
 def set_seed(seed: int = 42):
@@ -94,11 +96,12 @@ class Agent(nn.Module):
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # observations and states cache.
-        self.states_cache = {}
-        self.observation_cache = {}
-        self.latent_observation_cache = {}
-        self.action_cache = {}
-        self.latent_action_cache = {}
+        self.cache = Cache()
+        self.states_cache = Cache(StateNode)
+        self.observation_cache = Cache(torch.Tensor)
+        self.latent_observation_cache = Cache(torch.Tensor)
+        self.action_cache = Cache(torch.Tensor)
+        self.latent_action_cache = Cache(torch.Tensor)
 
         # dimensionality and tensor shapes
         self.state_depth = state_depth
@@ -109,7 +112,7 @@ class Agent(nn.Module):
         # of the incoming x when feeding into recurrent blocks, keeping at 1 for now
 
         # other non-model modules
-        self.loss = Loss()
+        self.loss = EnergyAggregator()
         self.optimizer_registry = OptimRegistry()
 
         # encoder to encode incoming observation(s)
@@ -192,16 +195,16 @@ class Agent(nn.Module):
             # print('h_states shape init trans model?', [[t.shape for t in thing] for thing in h_states])
 
         else:
-            state = self.states_cache[t - 1]
+            state = self.states_cache.get(t - 1)
             a, z = state.a, state.z_mean
             _, h_states = self.forward_transition_model(a, z, state=state)
             # print('h_states shape trans model?', [[t.shape for t in thing] for thing in h_states])
 
-        self.states_cache[t] = StateNode(
+        self.states_cache.add(t, StateNode(
             h_state=h_states,
             z_value=z,
             a_dim=self.a_dim,
-        )
+        ))
 
     def forward_transition_model(self, a, z, state=None, h=None):
         """
@@ -227,14 +230,14 @@ class Agent(nn.Module):
     def update_states_cache(self):
         """
         Simple helper method to update all timesteps in observation cache.
-        
         """
-        for t, o in self.observation_cache.items():
-            if t not in self.states_cache:
+        for t in self.observation_cache.keys():
+            if not self.latent_observation_cache.has(t):
+                o = self.observation_cache.get(t)
                 lat_o = self.obs_encoder.forward_image_features(o) # (image) -> (clip latent size=512)
                 z = self.z_encoder(lat_o)  # (all latent_obs) -> (z)
                 self.initialize_state_node(t, z)
-                self.latent_observation_cache[t] = lat_o
+                self.latent_observation_cache.add(t, lat_o)
 
     def belief_optim_wrap(self):
         """
@@ -242,10 +245,9 @@ class Agent(nn.Module):
         """
         # seperate optimizer for over beliefs over states
         all_params = []
-        for s in self.states_cache.values():
-            all_params.extend(list(s.h_modules.parameters()))
-            all_params.append(s.z_mean)
-        kwargs = dict(lr=0.005)
+        for state_node in self.states_cache.values():
+            all_params.extend(state_node.get_params())
+        kwargs = dict(lr=0.5)
         self.optimizer_registry.register_optim('states_cache', all_params, optim_name='SGD', **kwargs)
 
     def forward(self,
@@ -268,7 +270,7 @@ class Agent(nn.Module):
         """
         # 1 - 4:
         t = self.curr_timestep
-        self.observation_cache[t] = observations  # cache this observation
+        self.cache.add_key_semantic('observation_cache', t, observations)  # cache this observation
         self.inference()
 
         # 9. Act
@@ -300,13 +302,13 @@ class Agent(nn.Module):
             if step == 0:  # first step, percieve for latest prior and wrap in optim
                 self.update_states_cache()
                 self.belief_optim_wrap()
-                P_states = {k: s.clone(freeze=True) for k, s in self.states_cache.items()}
+                P_states = {k: s.clone().freeze() for k, s in self.states_cache.items()}
 
             # random timestep selection, to run inference on
-            timestep = random.choice(list(self.states_cache))
+            timestep = random.choice(list(self.cache.get_keys_semantic('states_cache')))
             print('-----------Selected timestep---------------', timestep)
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
-            P_states = {k: s.clone(detach=True, freeze=True) for k, s in P_states.items()}
+            P_states = {k: s.clone().detach().freeze() for k, s in P_states.items()}
             self.latent_observation_cache = {k: o.clone().detach() for k, o in self.latent_observation_cache.items()}
 
             # every 'update_rounds', do param learning (backprop_belief=False)
@@ -318,7 +320,7 @@ class Agent(nn.Module):
                         backprop_belief=False
                     ) for t in self.states_cache
                 )
-                P_states = {k: s.clone(detach=True, freeze=True) for k, s in P_states.items()}
+                P_states = {k: s.clone().detach().freeze() for k, s in P_states.items()}
                 self.latent_observation_cache = {k: o.clone().detach() for k, o in self.latent_observation_cache.items()}
                 print(f"[Step {step}] VFE = {total_vfe:.6f}") if print_statements else None
 
@@ -329,44 +331,43 @@ class Agent(nn.Module):
                         loss=total_vfe
                     )
 
+        # WM calculation TODO cant find a way to parallelize this cuh
         if len(self.states_cache) != 1:
             z = [s.z_mean for t, s in self.states_cache.items() if t != max(self.states_cache)]
             num_timesteps = len(z)
+            print('z', z)
             z_all = torch.concat(z, dim=0)
+            print('z_all', z_all)
             embed_dim = z_all.shape[-1]
             batch_size = int(z_all.shape[0] / num_timesteps)
             # TODO while we dont have actions we just dupe along embed dim
             a_z = torch.concat([z_all, z_all], dim=1)
-
-            x = self.a_z_encoder(a_z).reshape(batch_size, num_timesteps, embed_dim)
+            print('a_z', a_z)
+            x = self.a_z_encoder(a_z)
+            x = x.reshape(batch_size, num_timesteps, embed_dim)
 
             first_s = self.states_cache[min(self.states_cache)]
-            print('min(self.states_cache)', min(self.states_cache), self.states_cache.keys())
             first_h =  first_s.get_h_states()
-            print('first_h', first_h)
             init_h = self.world_model.initial_state(batchsize=1) # require init from self.wm cuz h from it must have certain num of timesteps
             init_mask, h_states = StateNode.unpack_mask_states(init_h)
-            print('h states before', h_states)
             for idx, depth in enumerate(first_h):
                 for jdx, thing in enumerate(depth):
-                    print('thing shape', thing.shape, thing)
-                    print('h_states[idx][jdx][-1] shape', h_states[idx][jdx][-1].shape)
                     h_states[idx][jdx][-1] = thing
 
-            print('h states after', h_states)
-            print('x shape', x.shape)
             print('xf_state', [[s.shape for s in something] for something in h_states])
             # TODO isnt the pruning before feeding into x handled by something else? either ways do it here
             most_recent_h = self.wm_attention_size - x.shape[1]
             h_states = [[h[:, -most_recent_h:, ...] for h in depth] for depth in h_states]
             print('h states after pruning', h_states)
             print('xf_states after pruning', [[s.shape for s in something] for something in h_states])
+            print('x?', x, x.shape)
             _, state_mask, pred_h = self.world_model(x,
                 state_mask=init_mask,
                 xf_state=h_states,
                 context={'first': self._dummy_first}
             )
             print('after step state_mask wm', state_mask)
+            print('pred_h', pred_h)
             # self.world_model.state_mask = state_mask
             pred_h = StateNode.flatten(pred_h)
             prior_h = StateNode.flatten(h_states)
@@ -405,15 +406,14 @@ class Agent(nn.Module):
             P_states: Dict of Ph_t 
             backprop_belief: Boolean on whether or not to call belief optimizer.
         """
+        state_calculations = []
         qs_t = self.states_cache[timestep]
         s_tm1 = self.states_cache.get(timestep - 1, None)
         s_tp1 = self.states_cache.get(timestep + 1, None)
         ps_t = P_states[timestep]
-        
-        # message from obs
-        qz_t = qs_t.z_mean
-        lat_o_pred = self.z_decoder(qz_t)
-        lat_o_true = self.latent_observation_cache[timestep]
+
+        state_calculations.append(
+            (self.loss.kl_divergence, qs_t.flattened_h_states, ps_t.flattened_h_states))
 
         # -------- prior from t-1 -------- 
         ph_from_tm1, qh_tm1 = None, None
@@ -421,6 +421,8 @@ class Agent(nn.Module):
             qh_tm1, qz_tm1, a_tm1 = s_tm1.get_h_states(), s_tm1.z_mean, s_tm1.a
             _, ph_from_tm1 = self.forward_transition_model(a_tm1, qz_tm1, h=qh_tm1)
             ph_from_tm1 = StateNode.flatten(ph_from_tm1[0])  # TODO hardcoded to depth = 1 for now i think
+            state_calculations.append(
+                (self.loss.kl_divergence, qs_t.flattened_h_states, ph_from_tm1))
 
         # -------- would-be h-prior at t+1 under current belief -------- 
         ph_at_tp1, qh_tp1 = None, None
@@ -429,41 +431,27 @@ class Agent(nn.Module):
             _, ph_at_tp1 = self.forward_transition_model(a_t, qz_t, h=qh_t)
             ph_at_tp1 = StateNode.flatten(ph_at_tp1[0])
             qh_tp1 = s_tp1.flattened_h_states
+            state_calculations.append(
+                (self.loss.kl_divergence, qh_tp1, ph_at_tp1),
+            )
+        states_energy = self.loss.compute_energy(state_calculations)
 
-        print('qh_t before??', qs_t.flattened_h_states)
-        print('ph_t before??', ps_t.flattened_h_states)
-        print('ph_at_tp1 before???', ph_at_tp1)
-        print('qh_tp1 before???', qh_tp1)
-        print('ph_from_tm1 before???', ph_from_tm1)
-        print('qh_tm1 before???', qh_tm1)
-        print('qz_t before???', qz_t)
-        total_energy = self.loss.compute_vfe_node(
-            qh_t=qs_t.flattened_h_states,
-            ph_t=ps_t.flattened_h_states,
-            ph_at_tp1=ph_at_tp1,
-            qh_tp1=qh_tp1,
-            ph_from_tm1=ph_from_tm1,
-            qh_tm1=s_tm1.flattened_h_states if s_tm1 is not None else None,
-            lat_o_pred=lat_o_pred,
-            lat_o_true=lat_o_true,
-        )
-        print('total energy', total_energy)
+        # message from obs
+        qz_t = qs_t.z_mean
+        lat_o_pred = self.z_decoder(qz_t)
+        lat_o_true = self.latent_observation_cache[timestep]
+        obs_negative_log = self.loss.compute_energy([
+            (self.loss.log_likelihood, lat_o_pred, lat_o_true),
+        ])
+        
+        total_energy = states_energy - obs_negative_log
 
         if backprop_belief:
-            print('verify etc before backward step', [(mod.key.grad, mod.value.grad) for mod in qs_t.h_modules])
             self.optimizer_registry.do_step(
                 key='states_cache',
                 loss=total_energy
             )
             qs_t = self.states_cache[timestep]
-            ps_t = P_states[timestep]
-            print('qh_t after??', qs_t.flattened_h_states)
-            print('ph_t after??', ps_t.flattened_h_states)
-            print('ph_at_tp1 after???', ph_at_tp1)
-            print('qh_tp1 after???', qh_tp1)
-            print('ph_from_tm1 after???', ph_from_tm1)
-            print('qh_tm1 after???', qh_tm1)
-            print('qz_t after???', qz_t)
 
         return total_energy
     
@@ -472,7 +460,6 @@ class Agent(nn.Module):
         Helper func to prune from caches if not in window.
         """
         window = range(self.curr_timestep - self.history, self.curr_timestep)
-        print('window post-pruning', list(window))
         self.states_cache = {
             t: v for t, v in self.states_cache.items() if t in window
         }

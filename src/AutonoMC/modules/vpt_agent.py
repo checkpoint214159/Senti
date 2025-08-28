@@ -3,10 +3,14 @@ import numpy as np
 import torch as th
 from gym import spaces
 from gym3.types import DictType
-from lib.action_mapping import CameraHierarchicalMapping
-from lib.actions import ActionTransformer
-from lib.policy import MinecraftAgentPolicy
-from lib.torch_util import default_device_type, set_default_torch_device
+
+from AutonoMC.modules.lib.action_mapping import CameraHierarchicalMapping
+from AutonoMC.modules.lib.actions import ActionTransformer
+from AutonoMC.modules.lib.policy import MinecraftAgentPolicy
+from AutonoMC.modules.lib.torch_util import (
+    default_device_type,
+    set_default_torch_device,
+)
 
 # Hardcoded settings
 AGENT_RESOLUTION = (128, 128)

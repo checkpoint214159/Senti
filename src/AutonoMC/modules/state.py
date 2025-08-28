@@ -83,18 +83,16 @@ class StateNode(nn.Module):
             # TODO update std for h?
             self.register_buffer("h_log_std", torch.ones(self.h_dim, device=device) * torch.log(torch.tensor(init_std)))
 
-    def clone(self, detach: bool = True, freeze: bool = True): # type: ignore
+    def clone(self): # type: ignore
         """
         Scuffed pytorch func to clone parameters.
+        This is so that we can call clone() and later detach() and freeze() as if StateNodes were plain tensors.
         """
         new_node = copy.deepcopy(self)
         
         # Go through parameters and clone/detach/freeze as needed
         for name, param in new_node.named_parameters():
             new_param = param.clone()
-            if detach:
-                new_param = new_param.detach()
-            new_param.requires_grad_(not freeze)
 
             # traverse tree to get to the object in which we set. assume no cancerous names e.g h_state.0, because that would break
             # python anyway and you cant have a .0 attribute
@@ -102,7 +100,7 @@ class StateNode(nn.Module):
             mod = new_node
             for idx, part in enumerate(split_name):
                 if idx == len(split_name) - 1:
-                    setattr(mod, part, nn.Parameter(new_param, requires_grad=not freeze))
+                    setattr(mod, part, nn.Parameter(new_param))
                 if part.isdigit():  # e.g for h_state.0.key, if we are at 0, fail gracefully if h_state is not a ModuleList
                     assert isinstance(mod, nn.ModuleList)
                     mod = mod[int(part)]
@@ -110,6 +108,16 @@ class StateNode(nn.Module):
                     mod = getattr(mod, part)
         
         return new_node
+    
+    def detach(self):
+        [param.detach() for _, param in self.named_parameters()]
+
+        return self
+
+    def freeze(self):
+        [param.requires_grad_(False) for _, param in self.named_parameters()]
+
+        return self
     
     @property
     def flattened_h_states(self):
@@ -182,3 +190,8 @@ class StateNode(nn.Module):
         """
         final_h_val = self.h_modules[-1].value
         return final_h_val
+    
+    def get_params(self):
+        all_params = list(self.h_modules.parameters())
+        all_params.append(self.z_mean)
+        return all_params

@@ -8,9 +8,9 @@ import torch as th
 from torch import nn
 from torch.nn import functional as F
 
-from lib import misc, mlp
-from lib import torch_util as tu
-from lib import util
+from AutonoMC.modules.lib import misc, mlp
+from AutonoMC.modules.lib import torch_util as tu
+from AutonoMC.modules.lib import util
 
 SENTINEL = 0.1337
 

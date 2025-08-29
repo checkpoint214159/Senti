@@ -15,7 +15,7 @@ import torch
 from mineclip import MineCLIP
 from torch import nn
 
-from AutonoMC.modules.agent_utils import Cache
+from AutonoMC.modules.agent_utils import TensorCache, StateCache
 from AutonoMC.modules.lib.action_head import create_action_head
 from AutonoMC.modules.lib.action_mapping import CameraHierarchicalMapping
 from AutonoMC.modules.lib.actions import ActionTransformer
@@ -96,12 +96,11 @@ class Agent(nn.Module):
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # observations and states cache.
-        self.cache = Cache()
-        self.states_cache = Cache(StateNode)
-        self.observation_cache = Cache(torch.Tensor)
-        self.latent_observation_cache = Cache(torch.Tensor)
-        self.action_cache = Cache(torch.Tensor)
-        self.latent_action_cache = Cache(torch.Tensor)
+        self.states_cache = StateCache()
+        self.observation_cache = TensorCache()
+        self.latent_observation_cache = TensorCache()
+        self.action_cache = TensorCache()
+        self.latent_action_cache = TensorCache()
 
         # dimensionality and tensor shapes
         self.state_depth = state_depth
@@ -184,6 +183,7 @@ class Agent(nn.Module):
         )
 
         self.curr_timestep = 0
+        self.window = range(self.curr_timestep - self.history, self.curr_timestep)
     
     def initialize_state_node(self, t, z):
         # TODO: generalize further for during planning?
@@ -270,7 +270,7 @@ class Agent(nn.Module):
         """
         # 1 - 4:
         t = self.curr_timestep
-        self.cache.add_key_semantic('observation_cache', t, observations)  # cache this observation
+        self.observation_cache.add(t, observations)  # cache this observation
         self.inference()
 
         # 9. Act
@@ -302,14 +302,14 @@ class Agent(nn.Module):
             if step == 0:  # first step, percieve for latest prior and wrap in optim
                 self.update_states_cache()
                 self.belief_optim_wrap()
-                P_states = {k: s.clone().freeze() for k, s in self.states_cache.items()}
+                P_states = self.states_cache.replica(detach=True, freeze=True)
 
             # random timestep selection, to run inference on
-            timestep = random.choice(list(self.cache.get_keys_semantic('states_cache')))
+            timestep = random.choice(list(self.states_cache.keys()))
             print('-----------Selected timestep---------------', timestep)
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
-            P_states = {k: s.clone().detach().freeze() for k, s in P_states.items()}
-            self.latent_observation_cache = {k: o.clone().detach() for k, o in self.latent_observation_cache.items()}
+            P_states = P_states.replica(detach=True, freeze=True)
+            self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
 
             # every 'update_rounds', do param learning (backprop_belief=False)
             if step % update_rounds == 0:
@@ -318,10 +318,10 @@ class Agent(nn.Module):
                         timestep=t,
                         P_states=P_states,
                         backprop_belief=False
-                    ) for t in self.states_cache
+                    ) for t in self.states_cache.keys()
                 )
-                P_states = {k: s.clone().detach().freeze() for k, s in P_states.items()}
-                self.latent_observation_cache = {k: o.clone().detach() for k, o in self.latent_observation_cache.items()}
+                P_states = P_states.replica(detach=True, freeze=True)
+                self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
                 print(f"[Step {step}] VFE = {total_vfe:.6f}") if print_statements else None
 
                 if self.amortized_inf:
@@ -407,10 +407,10 @@ class Agent(nn.Module):
             backprop_belief: Boolean on whether or not to call belief optimizer.
         """
         state_calculations = []
-        qs_t = self.states_cache[timestep]
-        s_tm1 = self.states_cache.get(timestep - 1, None)
-        s_tp1 = self.states_cache.get(timestep + 1, None)
-        ps_t = P_states[timestep]
+        qs_t = self.states_cache.get(timestep)
+        s_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None
+        s_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None
+        ps_t = P_states.get(timestep)
 
         state_calculations.append(
             (self.loss.kl_divergence, qs_t.flattened_h_states, ps_t.flattened_h_states))
@@ -439,7 +439,7 @@ class Agent(nn.Module):
         # message from obs
         qz_t = qs_t.z_mean
         lat_o_pred = self.z_decoder(qz_t)
-        lat_o_true = self.latent_observation_cache[timestep]
+        lat_o_true = self.latent_observation_cache.get(timestep)
         obs_negative_log = self.loss.compute_energy([
             (self.loss.log_likelihood, lat_o_pred, lat_o_true),
         ])
@@ -451,25 +451,23 @@ class Agent(nn.Module):
                 key='states_cache',
                 loss=total_energy
             )
-            qs_t = self.states_cache[timestep]
-
         return total_energy
     
     def prune(self):
         """
         Helper func to prune from caches if not in window.
         """
-        window = range(self.curr_timestep - self.history, self.curr_timestep)
-        self.states_cache = {
-            t: v for t, v in self.states_cache.items() if t in window
-        }
-        self.latent_observation_cache = {
-            t: v for t, v in self.latent_observation_cache.items() if t in window
-        }
-        self.observation_cache = {
-            t: v for t, v in self.observation_cache.items() if t in window
-        }
- 
+        new_window = range(self.curr_timestep - self.history, self.curr_timestep)
+        removed_timesteps = list(set(self.window) - set(new_window))
+        self.window = new_window
+
+        print('REMOVED TIMESTEPS', removed_timesteps)
+
+        for t in removed_timesteps:
+            self.states_cache.remove(t) if self.states_cache.has(t) else None
+            self.latent_observation_cache.remove(t) if self.latent_observation_cache.has(t) else None
+            self.observation_cache.remove(t) if self.observation_cache.has(t) else None
+
     def planning(
             self,
             o_target

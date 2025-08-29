@@ -1,6 +1,9 @@
 # venv stuffs
 *venv*
 
+*__pycache__*
+venv_minerl
+
 # logs
 *logs
 *.log

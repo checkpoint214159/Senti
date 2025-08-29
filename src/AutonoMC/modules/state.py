@@ -83,16 +83,21 @@ class StateNode(nn.Module):
             # TODO update std for h?
             self.register_buffer("h_log_std", torch.ones(self.h_dim, device=device) * torch.log(torch.tensor(init_std)))
 
-    def clone(self): # type: ignore
+    def clone(self, detach=False, freeze=False): # type: ignore
         """
         Scuffed pytorch func to clone parameters.
-        This is so that we can call clone() and later detach() and freeze() as if StateNodes were plain tensors.
+        This is to provide an interface that we can call as if StateNodes were plain tensors.
+        Because detach and freeze ops usually follow with cloning in our use case, for now they are optional args
+        we can pass in.
         """
         new_node = copy.deepcopy(self)
         
         # Go through parameters and clone/detach/freeze as needed
         for name, param in new_node.named_parameters():
             new_param = param.clone()
+            if detach:
+                new_param = new_param.detach()
+            new_param.requires_grad_(not freeze)
 
             # traverse tree to get to the object in which we set. assume no cancerous names e.g h_state.0, because that would break
             # python anyway and you cant have a .0 attribute

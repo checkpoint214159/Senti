@@ -9,7 +9,7 @@ from AutonoMC.modules.lib.tree_util import tree_map
 
 
 @functools.lru_cache()
-def get_band_diagonal_mask(t: int, T: int, maxlen: int, batchsize: int, device: th.device) -> th.Tensor:
+def get_band_diagonal_mask(t: int, T: int, maxlen: int, batch_size: int, device: th.device) -> th.Tensor:
     """Returns a band diagonal mask which is causal (upper triangle is masked)
     and such that any frame can only view up to maxlen total past frames
     including the current frame.
@@ -29,17 +29,17 @@ def get_band_diagonal_mask(t: int, T: int, maxlen: int, batchsize: int, device: 
         t: number of rows (presumably number of frames recieving gradient)
         T: number of cols (presumably t + past context that isn't being gradient updated)
         maxlen: maximum number of frames (including current frame) any frame can attend to
-        batchsize: number of masks to return
+        batch_size: number of masks to return
         device: torch device to place mask on
 
     Returns:
-        Boolean mask of shape (batchsize, t, T)
+        Boolean mask of shape (batch_size, t, T)
     """
     m = th.ones(t, T, dtype=bool)
     m.tril_(T - t)  # Mask out upper triangle
     if maxlen is not None and maxlen < T:  # Mask out lower triangle
         m.triu_(T - t - maxlen + 1)
-    m_btT = m[None].repeat_interleave(batchsize, dim=0)
+    m_btT = m[None].repeat_interleave(batch_size, dim=0)
     m_btT = m_btT.to(device=device)
     return m_btT
 
@@ -58,7 +58,7 @@ def get_mask(first_b11: th.Tensor, state_mask: th.Tensor, t: int, T: int, maxlen
         In particular state_mask is a [b, t, T - t] mask matrix that contains the mask for the past T - t frames.
 
     Args: (See get_band_diagonal_mask for remaining args)
-        first_b11: boolean tensor with shape [batchsize, 1, 1] indicating if the first timestep for each batch element had first=True
+        first_b11: boolean tensor with shape [batch_size, 1, 1] indicating if the first timestep for each batch element had first=True
         state_mask: mask tensor of shape [b, t, T - t]
         t: number of mask rows (presumably number of frames for which we take gradient)
         T: number of mask columns (t + the number of past frames we keep in context)
@@ -67,7 +67,7 @@ def get_mask(first_b11: th.Tensor, state_mask: th.Tensor, t: int, T: int, maxlen
         device: torch device
 
     Returns:
-        m_btT: Boolean mask of shape (batchsize * heads, t, T)
+        m_btT: Boolean mask of shape (batch_size * heads, t, T)
         state_mask: updated state_mask
     """
     b = first_b11.shape[0]
@@ -150,9 +150,9 @@ class MaskedAttention(nn.Module):
             use_muP_factor=use_muP_factor,
         )
 
-    def initial_state(self, batchsize: int, device=None):
+    def initial_state(self, batch_size: int, device=None):
         """Return the initial state mask (None) and the initial state of the transformer (zerod out keys and queries)"""
-        state = self.orc_block.initial_state(batchsize, initial_T=self.maxlen)
+        state = self.orc_block.initial_state(batch_size, initial_T=self.maxlen)
         state_mask = None
         if device is not None:
             state = tree_map(lambda x: x.to(device), state)

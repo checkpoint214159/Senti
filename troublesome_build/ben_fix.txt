@@ -12,3 +12,8 @@ docker exec -it 'container_id' /bin/bash
 sudo cp /AutonoMC/troublesome_build/build.gradle /opt/conda/lib/python3.9/site-packages/minedojo/sim/Malmo/Minecraft/
 
 # fixes gradle isntall configuration, pointing it to /AutonoMC/troublesome_build/.
+
+# if you're running it locally and your sim is in some venv, e.g /mnt/e/AutonoMC/venv_minerl/lib/python3.10/site-packages/minedojo/sim,
+# just point it there:
+
+cp /mnt/e/AutonoMC/troublesome_build/build.gradle /mnt/e/AutonoMC/venv_minerl/lib/python3.10/site-packages/minedojo/sim/Malmo/Minecraft/build.gradle

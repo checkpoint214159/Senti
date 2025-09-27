@@ -145,8 +145,8 @@ class WorldModel(nn.Module):
             return pi_latent, state_mask, xf_state
         return (pi_latent, vf_latent), state_mask, xf_state
 
-    def initial_state(self, batchsize):
+    def initial_state(self, batch_size):
         if self.recurrent_layer:
-            return self.recurrent_layer.initial_state(batchsize)
+            return self.recurrent_layer.initial_state(batch_size)
         else:
             return None

@@ -22,7 +22,7 @@ def test_h_updating(default_transition_model):
     optim_registry = OptimRegistry()
 
     transition_model = default_transition_model
-    ini_h_states = transition_model.initial_state(batchsize=1)
+    ini_h_states = transition_model.initial_state(batch_size=1)
     _, h_states = StateNode.unpack_mask_states(ini_h_states)
 
     prior_h_statenode = StateNode(
@@ -72,7 +72,7 @@ def test_h_updating(default_transition_model):
 #         )
 #     old_transition_model_params = list(transition_model.parameters())
 
-#     ini_h_states = transition_model.initial_state(batchsize=1)
+#     ini_h_states = transition_model.initial_state(batch_size=1)
 #     _, h_states = StateNode.unpack_mask_states(ini_h_states)
 
 #     prior_h_statenode = StateNode(

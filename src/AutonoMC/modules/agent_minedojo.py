@@ -3,19 +3,21 @@ This module is meant to encapsulate the entire agent.
 Its scope contains all its components.
 Its methods controls the flow of everything.
 """
+import copy
 import json
 import logging
 import random
 from pathlib import Path
 
 import cv2
+import einops
 import numpy as np
 import requests
 import torch
 from mineclip import MineCLIP
 from torch import nn
 
-from AutonoMC.modules.agent_utils import TensorCache, StateCache
+from AutonoMC.modules.agent_utils import StateCache, TensorCache
 from AutonoMC.modules.lib.action_head import create_action_head
 from AutonoMC.modules.lib.action_mapping import CameraHierarchicalMapping
 from AutonoMC.modules.lib.actions import ActionTransformer
@@ -81,18 +83,24 @@ class Agent(nn.Module):
         h_dim=8,
     ):
         """
-        The agent contains the following modules:
-            - CLIP encoder for o -> lat_o
-            - state encoder, then decoder for lat_o -> z -> lat_o
-            - TransitionModel (rename to dynamics soon?) h_tp1 = f(h_tm1, z_tm1, a_tm1)
-            - 
+        The highest level of abstraction: Deals with overall control flow and calls
+        components. Timestep flow is as follows:
+
+        curr_timestep = 1: Init zero state at t=0, predict t=1 using transition model, then
+            do inference / planning
+        curr_timestep = 2: predict t=2 using transition model, then do inference / planning
+        ...
+        ^ note how we do not zero index the current timestep, but we do keep (until we discard it)
+        a 'state at t=0'; this is a convenience to make it easier to think of this decision process
+        (trust me, i tried 'curr_timestep = 0' at the start, was very ugly. it is much easier to say
+        at the n'th timestep, we predict the nth prior state.)
         """
         # admin stuff
         super().__init__()
+        self.batch_size = 1 # for now
         path = clip_config.pop('ckpt_path', None)
         self.latent_image_dim = clip_config.get('image_feature_dim', 512)
         self.amortized_inf = True
-        self.history = history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # observations and states cache.
@@ -107,8 +115,20 @@ class Agent(nn.Module):
         self.h_dim = h_dim
         self.z_dim = self.h_dim
         self.a_dim = self.h_dim
-        self.timestep_size = 1  # TODO clarify its use. right now, timestep_size refers to the time dim
-        # of the incoming x when feeding into recurrent blocks, keeping at 1 for now
+        self.history = history  # this means when inference is run, NOT inclusive of latest obs, there are these many past h
+        self.transition_timestep_size = 1  # right now, refers to the time dim
+        # of the incoming x when feeding into transition model, keeping at 1 for now
+        self.wm_timestep_size = 1 # vice versa for wm; allowing us to operate at different timescales (from observation cache,
+        # how many timesteps of x to take at once) TODO only works for 1 now!!! must resolve
+        # how we can make it work with more than one (might not divide perfectly while not reached full history)
+        # SAFETY ASSERTION!!
+        assert self.wm_timestep_size == 1, "Assertion failed, we current do not support wm timestep ingestion of greater \
+            than one timestep!"
+        # TODO update these assertions
+        assert self.history > self.wm_timestep_size + 1, \
+            "Assertion failed. History cannot be shorter than 1 + incoming x to wm (minimum of one timestep from cache)"
+        assert self.history % self.wm_timestep_size == 0, \
+            "Assertion failed. For now, only allow slices of x that cleanly divide self.history (wm attention size things)"
 
         # other non-model modules
         self.loss = EnergyAggregator()
@@ -134,10 +154,10 @@ class Agent(nn.Module):
         ) # P(o|z).
         self.transition_model = WorldModel(
             recurrence_type="transformer",
-            attention_memory_size=2 * self.timestep_size,
+            attention_memory_size=2 * self.transition_timestep_size,  # consumes previous state
             hidsize=self.h_dim,
             n_recurrence_layers=state_depth,
-            timesteps=self.timestep_size,
+            timesteps=self.transition_timestep_size,
         )
         # for now, concat the latent prev action and latent obs together, then do preprocessing to map it to the 
         self.a_z_encoder = nn.Sequential(
@@ -145,22 +165,14 @@ class Agent(nn.Module):
             nn.LayerNorm(self.h_dim),
             nn.ReLU()
         )
-        self.wm_attention_size = self.history + self.timestep_size
+        self.wm_attention_size = self.history + self.wm_timestep_size  #
         self.world_model = WorldModel(
             recurrence_type="transformer",
             attention_memory_size=self.wm_attention_size,
             hidsize=self.h_dim,
             n_recurrence_layers=state_depth,
-            timesteps=self.timestep_size,
+            timesteps=self.wm_timestep_size,
         )
-
-        self.pi_head = create_action_head(
-            n_camera_bins=11,
-            latent_size=h_dim,
-            mapper_class=CameraHierarchicalMapping,
-            temperature=2.0
-        )
-        self.action_transformer = ActionTransformer(**ACTION_TRANSFORMER_KWARGS)
 
         self._dummy_first = torch.from_numpy(np.array((False,))).to(device).unsqueeze(1)
 
@@ -182,28 +194,53 @@ class Agent(nn.Module):
             'wm', wm_params, **kwargs
         )
 
-        self.curr_timestep = 0
-        self.window = range(self.curr_timestep - self.history, self.curr_timestep)
-    
+        self.curr_timestep = 1
+        self.window = self.update_window()
+
+    def update_window(self):
+        window = range(self.curr_timestep - self.history, self.curr_timestep + 1)
+        # plus one because range is not upper closed
+        return window
+
+    def pre_step_hook(self):
+        """
+        Helper func to execute all required variable updates before a step
+        """
+        pass
+
+    def post_step_hook(self):
+        """
+        Helper func to execute all required variable updates before after step
+        """
+        self.curr_timestep += 1 # update current timestep
+        self.window = self.update_window()
+
     def initialize_state_node(self, t, z):
         # TODO: generalize further for during planning?
-        if t == 0:
-            initial = self.transition_model.initial_state(batchsize=1)  # list[tuple[None, tuple[torch.Tensor]]]
+        if t == 1:  # at t=1, the start, we still init a prior belief over zero, the conceptual
+            # trues state prior (belief abt the environment before it even existed. very based)
+            initial = self.transition_model.initial_state(batch_size=self.batch_size)  # list[tuple[None, tuple[torch.Tensor]]]
             h_masks, h_states = StateNode.unpack_mask_states(initial)
             self.world_model.state_mask = list(h_masks)
             h_states = list(h_states)
-            # print('h_states shape init trans model?', [[t.shape for t in thing] for thing in h_states])
 
-        else:
-            state = self.states_cache.get(t - 1)
-            a, z = state.a, state.z_mean
-            _, h_states = self.forward_transition_model(a, z, state=state)
-            # print('h_states shape trans model?', [[t.shape for t in thing] for thing in h_states])
+            self.states_cache.add(0, StateNode(
+                h_state=h_states,
+                z_dim=self.z_dim,  # the zeroth observation
+                a_dim=self.a_dim,
+                batch_size=self.batch_size,
+                device=self.device,
+            ))
+
+        state = self.states_cache.get(t - 1)
+        am1, zm1 = state.a, state.z_mean
+        _, h_states = self.forward_transition_model(am1, zm1, state=state)
 
         self.states_cache.add(t, StateNode(
             h_state=h_states,
             z_value=z,
             a_dim=self.a_dim,
+            device=self.device,
         ))
 
     def forward_transition_model(self, a, z, state=None, h=None):
@@ -271,14 +308,16 @@ class Agent(nn.Module):
         # 1 - 4:
         t = self.curr_timestep
         self.observation_cache.add(t, observations)  # cache this observation
+        self.update_states_cache()
         self.inference()
 
-        # 9. Act
-        # self.pi_head.predict('output_from_transmodel')
+        # only ground wm when we have sufficient x in cache = self.wm_timestep_size + 1 (for initial h)
+        if self.curr_timestep > self.wm_timestep_size: # because self.curr_timestep is 0 indexed TODO this is annoying and unclear
+            self.ground_wm()
 
         # cleanup: shift window and remove all keys not in the window
-        self.curr_timestep += 1
-        self.prune()
+        self.post_step_hook()
+        self.prune_cache()
 
     def inference(
         self,
@@ -300,12 +339,13 @@ class Agent(nn.Module):
 
         for step in range(max_update_steps):
             if step == 0:  # first step, percieve for latest prior and wrap in optim
-                self.update_states_cache()
                 self.belief_optim_wrap()
                 P_states = self.states_cache.replica(detach=True, freeze=True)
 
-            # random timestep selection, to run inference on
-            timestep = random.choice(list(self.states_cache.keys()))
+            # random timestep selection from observation cache, to run inference on
+            # since there isn't a zeroth timestep observation (we didnt add it) this should be
+            # safe
+            timestep = random.choice(list(self.observation_cache.keys()))
             print('-----------Selected timestep---------------', timestep)
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
             P_states = P_states.replica(detach=True, freeze=True)
@@ -318,7 +358,7 @@ class Agent(nn.Module):
                         timestep=t,
                         P_states=P_states,
                         backprop_belief=False
-                    ) for t in self.states_cache.keys()
+                    ) for t in self.states_cache.keys() if t != 0  # except this the zero key
                 )
                 P_states = P_states.replica(detach=True, freeze=True)
                 self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
@@ -331,60 +371,128 @@ class Agent(nn.Module):
                         loss=total_vfe
                     )
 
-        # WM calculation TODO cant find a way to parallelize this cuh
-        if len(self.states_cache) != 1:
-            z = [s.z_mean for t, s in self.states_cache.items() if t != max(self.states_cache)]
-            num_timesteps = len(z)
-            print('z', z)
-            z_all = torch.concat(z, dim=0)
-            print('z_all', z_all)
-            embed_dim = z_all.shape[-1]
-            batch_size = int(z_all.shape[0] / num_timesteps)
-            # TODO while we dont have actions we just dupe along embed dim
-            a_z = torch.concat([z_all, z_all], dim=1)
-            print('a_z', a_z)
-            x = self.a_z_encoder(a_z)
-            x = x.reshape(batch_size, num_timesteps, embed_dim)
-
-            first_s = self.states_cache[min(self.states_cache)]
-            first_h =  first_s.get_h_states()
-            init_h = self.world_model.initial_state(batchsize=1) # require init from self.wm cuz h from it must have certain num of timesteps
-            init_mask, h_states = StateNode.unpack_mask_states(init_h)
-            for idx, depth in enumerate(first_h):
-                for jdx, thing in enumerate(depth):
-                    h_states[idx][jdx][-1] = thing
-
-            print('xf_state', [[s.shape for s in something] for something in h_states])
-            # TODO isnt the pruning before feeding into x handled by something else? either ways do it here
-            most_recent_h = self.wm_attention_size - x.shape[1]
-            h_states = [[h[:, -most_recent_h:, ...] for h in depth] for depth in h_states]
-            print('h states after pruning', h_states)
-            print('xf_states after pruning', [[s.shape for s in something] for something in h_states])
-            print('x?', x, x.shape)
-            _, state_mask, pred_h = self.world_model(x,
-                state_mask=init_mask,
-                xf_state=h_states,
-                context={'first': self._dummy_first}
-            )
-            print('after step state_mask wm', state_mask)
-            print('pred_h', pred_h)
-            # self.world_model.state_mask = state_mask
-            pred_h = StateNode.flatten(pred_h)
-            prior_h = StateNode.flatten(h_states)
-
-            total_loss = self.loss.kl_divergence(
-                prior_h, pred_h
-            ).mean()
-            print('total wm loss?', total_loss)
-            self.optimizer_registry.do_step(
-                key='wm',
-                loss=total_loss)
-            print('backpropped wm!')
-
-        print("Reached max inference steps.")
-
         return total_vfe
 
+    def ground_wm(self):
+        """
+        Updates predictive WM to match transition model
+        Iteratively feed states into wm, starting with first h.
+
+        For clarity, the process is as follows:
+        the worldmodel expects a certain size (B, T, D). Thus, at any point in iteration, 
+        T = incoming_timesteps_from_x + existing_timesteps_from_h. 
+        This is expressed by T = self.wm_attention_size
+        and incoming_timesteps_from_x = self.wm_timestep_size
+        and existing_timesteps_from_h = self.history
+
+        There is a small annoyance, in that the first_h must be padded to self.history, even though
+        we might not be comparing across the whole history yet. E.g we are on curr_timestep = 1,
+        so our cache has 2 observations, but 
+        """
+        # TODO make this process cleaner
+
+        # TODO place this somewhere smarter, and clean out roles
+        def chunked_dict_items(d, n):
+            """Yield successive n-sized chunks of (key,value) pairs from dict d."""
+            items = list(d.items())
+            for i in range(0, len(items), n):
+                yield dict(items[i:i+n])
+
+        # populate initial zeros h with the oldest first state
+        first_s = self.states_cache.get(max(min(self.window), 0))
+        first_h =  first_s.get_h_states()
+        pred_h = [[s.repeat(1, self.history, 1) for s in depth] for depth in first_h]  # we need it to be
+        # of size self.history, though we will cut out any excess later
+        for t_s_dict in chunked_dict_items(self.states_cache, self.wm_timestep_size):
+            # TODO tidy this up
+            if self.curr_timestep in t_s_dict.keys():
+                continue
+            z = [s.z_mean for t, s in t_s_dict.items()]
+            B, D = z[0].shape
+            z_all = torch.concat(z, dim=0) # list[(B, D)] -> (T * B, D) so we can pass into nn
+            a_z = torch.concat([z_all, z_all], dim=1)  # TODO while we dont have actions we just dupe along embed dim
+            x = self.a_z_encoder(a_z)
+            x = x.reshape(B, self.wm_timestep_size, D)
+
+            _, state_mask, pred_h = self.world_model(
+                x,
+                state_mask=[None],
+                xf_state=pred_h,
+                context={'first': self._dummy_first}
+            )
+
+        most_recent = len(self.states_cache)
+        prune_pred_h = [tuple(s[:, -most_recent:, :] for s in s_tuple) for s_tuple in pred_h]
+        gt = list(self.states_cache.get_all_h_states().values())
+
+        pred_h = StateNode.flatten(prune_pred_h)
+        prior_h = StateNode.flatten(gt)
+
+        total_loss = self.loss.kl_divergence(
+            prior_h, pred_h
+        ).mean()
+        print('total wm loss?', total_loss)
+        self.optimizer_registry.do_step(
+            key='wm',
+            loss=total_loss)
+        print('backpropped wm!')
+        
+        # -------------------------------------- OLD -------------------------------------
+        # format x
+        # z = [s.z_mean for t, s in self.states_cache.items() if t != self.curr_timestep]
+        # num_future_timesteps = len(z)
+        # B, D = z[0].shape
+        # print('z[0].shape', z[0].shape)
+        # z_all = torch.concat(z, dim=0) # list[(B, D)] -> (T * B, D) so we can pass into nn
+        # print('z_all', z_all.shape)
+        # a_z = torch.concat([z_all, z_all], dim=1) 
+        # print('a_z', a_z.shape)
+        # x = self.a_z_encoder(a_z)
+        # print('x', x.shape)
+        # x = x.reshape(B, num_future_timesteps, D)
+        # print('x', x.shape)
+
+        # # populate initial h with 
+        # first_s = self.states_cache.get(max(min(self.window), 0))
+        # first_h =  first_s.get_h_states()
+        # init_h = self.world_model.initial_state(batch_size=1) # require init from self.wm cuz h from it must have certain num of timesteps
+        # init_mask, h_states = StateNode.unpack_mask_states(init_h)
+        # # recall first_h [(key, value), ...] x depth length
+        # for idx, pack in enumerate(first_h):
+        #     for jdx, item in enumerate(pack):
+        #         h_states[idx][jdx][-1] = item
+
+        # print('h_states', h_states)
+        # print('init_mask', init_mask)
+        # print('first_h', first_h)
+
+        # most_recent_h = self.wm_attention_size - num_future_timesteps
+        # print('most recent h?', most_recent_h)
+        # print('self.wm_attention_size', self.wm_attention_size)
+        # print('num_future_timesteps', num_future_timesteps)
+        
+        # h_states = [[h[:, -most_recent_h:, ...] for h in depth] for depth in h_states]
+
+        # _, state_mask, pred_h = self.world_model(x,
+        #     state_mask=[None],
+        #     xf_state=h_states,
+        #     context={'first': self._dummy_first}
+        # )
+
+        # pred_h = StateNode.flatten(pred_h)
+        # prior_h = StateNode.flatten(h_states)
+        # print('pred_h', pred_h)
+        # print('prior_h', prior_h)
+        # total_loss = self.loss.kl_divergence(
+        #     prior_h, pred_h
+        # ).mean()
+        # print('total wm loss?', total_loss)
+        # self.optimizer_registry.do_step(
+        #     key='wm',
+        #     loss=total_loss)
+        # print('backpropped wm!')
+
+        # print("Reached max inference steps.")
     
 
     def inference_step(
@@ -451,22 +559,16 @@ class Agent(nn.Module):
                 key='states_cache',
                 loss=total_energy
             )
+
         return total_energy
     
-    def prune(self):
+    def prune_cache(self):
         """
         Helper func to prune from caches if not in window.
         """
-        new_window = range(self.curr_timestep - self.history, self.curr_timestep)
-        removed_timesteps = list(set(self.window) - set(new_window))
-        self.window = new_window
-
-        print('REMOVED TIMESTEPS', removed_timesteps)
-
-        for t in removed_timesteps:
-            self.states_cache.remove(t) if self.states_cache.has(t) else None
-            self.latent_observation_cache.remove(t) if self.latent_observation_cache.has(t) else None
-            self.observation_cache.remove(t) if self.observation_cache.has(t) else None
+        self.states_cache.purge_missing(self.window)
+        self.latent_observation_cache.purge_missing(self.window)
+        self.observation_cache.purge_missing(self.window)
 
     def planning(
             self,
@@ -524,29 +626,7 @@ clip_config = {
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 agent = Agent(clip_config=clip_config).to(device)
 
-noop_action = {
-    "attack": [0],
-    "back": [0],
-    "forward": [0],
-    "jump": [0],
-    "left": [0],
-    "right": [0],
-    "sneak": [0],
-    "sprint": [0],
-    "use": [0],
-    "drop": [0],
-    "inventory": [0],
-    "hotbar.1": [0],
-    "hotbar.2": [0],
-    "hotbar.3": [0],
-    "hotbar.4": [0],
-    "hotbar.5": [0],
-    "hotbar.6": [0],
-    "hotbar.7": [0],
-    "hotbar.8": [0],
-    "hotbar.9": [0],
-    "camera": [[0.0, 0.0]]
-}
+noop_action = [0, 0, 0, 0, 0, 0, 0, 0]
 
 for i in range(10):
     response = requests.post(
@@ -557,17 +637,14 @@ for i in range(10):
     )
 
     return_dict = json.loads(response.content)
-    # print('return_dict', return_dict['obs'].keys())
-    # print('return dict obs life stats', return_dict['obs']['life_stats'])
-    # print('return dict obs use_item', return_dict['obs']['use_item'])
-    pic = np.asarray(return_dict['obs']['pov']).astype(np.uint8)
+    pic = np.asarray(return_dict['obs']['rgb']).astype(np.uint8)
 
-    arr = cv2.resize(pic, (256, 160), interpolation=cv2.INTER_LINEAR)
-    arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+    pic = einops.rearrange(pic, "C H W -> H W C")
+    pic = cv2.resize(pic, (256, 160), interpolation=cv2.INTER_LINEAR)
+    pic = einops.rearrange(pic, "H W C -> C H W")
 
-    images = arr[np.newaxis, :, :, :]
+    images = pic[np.newaxis, :, :, :]  # add a batch dim
     images = torch.from_numpy(images).to(device)
-    images = images.permute(0, 3, 1, 2)
     print('images shape', images.shape, images.device)
 
     agent.forward(observations=images)

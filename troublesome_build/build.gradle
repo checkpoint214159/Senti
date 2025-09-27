@@ -2,12 +2,12 @@
 buildscript {
     repositories {
 
-        maven { url = 'https://jitpack.io' }
+        maven { url 'https://jitpack.io' }
         jcenter()
         mavenCentral()
         maven {
             // url = "file:/AutonoMC/troublesome_build/" // Local directory where the repository was cloned
-            url = "file:/mnt/e/AutonoMC/troublesome_build/" // Local directory where the repository was cloned
+            url = "file:/mnt/e/AutonoMC/troublesome_build" // Local directory where the repository was cloned
         }
         maven {
             name = "forge"
@@ -21,17 +21,33 @@ buildscript {
     dependencies {
         classpath 'org.ow2.asm:asm:6.0'
         // classpath('com.github.SpongePowered:MixinGradle:dcfaf61'){ // 0.6
-        //     // Because forgegradle requires 6.0 (not -debug-all) while mixinGradle depends on 5.0
-        //     // and putting mixin here places it before forge in the class loader
+        //     // Because forgegradle requires 6.0 (not -debug-all) while mixingradle depends on 5.0
+        //     // and putting mixin right here will place it before forge in the class loader
         //     exclude group: 'org.ow2.asm', module: 'asm-debug-all'
         // }
+
+        // the above was edited as it would search 
+        // /mnt/e/AutonoMC/troublesome_build/com/github/SpongePowered/MixinGradle/dcfaf61/MixinGradle-dcfaf61.jar
+        // instead, make it search
+        // /mnt/e/AutonoMC/troublesome_build/MixinGradle-dcfaf61/MixinGradle/dcfaf61/MixinGradle-dcfaf61.jar
         classpath('MixinGradle-dcfaf61:MixinGradle:dcfaf61'){ // 0.6
-            // Because forgegradle requires 6.0 (not -debug-all) while mixinGradle depends on 5.0
-            // and putting mixin here places it before forge in the class loader
+            // Because forgegradle requires 6.0 (not -debug-all) while mixingradle depends on 5.0
+            // and putting mixin right here will place it before forge in the class loader
             exclude group: 'org.ow2.asm', module: 'asm-debug-all'
         }
 
-        classpath 'com.github.brandonhoughton:ForgeGradle:FG_2.2_patched-SNAPSHOT'
+
+        classpath 'com.github.yunfanjiang:ForgeGradle:FG_2.2_patched-SNAPSHOT'
+    }
+    configurations {
+        compileClasspath {
+            resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+                if (details.requested.group == 'org.apache.logging.log4j') {
+                    details.useVersion '2.16.0'
+                    details.because 'zero-day-exploits on log4j <2.15.0'
+                }
+            }
+        }
     }
 }
 
@@ -41,7 +57,7 @@ plugins {
 }
 
 dependencies {
-    implementation 'com.github.brandonhoughton:forgegradle:FG_2.2_patched-SNAPSHOT'
+    implementation 'com.github.yunfanjiang:ForgeGradle:FG_2.2_patched-SNAPSHOT'
 }
 
 apply plugin: 'net.minecraftforge.gradle.forge'
@@ -305,7 +321,7 @@ task jaxb() {
     description 'Generate source files for our XML schemas using JAXB'
 
     // Create an index file listing all the schemas:
-    def schemaIndexFile = new File('src/main/resources/schemas.index')
+    def schemaIndexFile = new File("$projectDir/src/main/resources/schemas.index")
     def contents = ""
     def tree = copySchemas.source
     tree.visit { fileDetails ->

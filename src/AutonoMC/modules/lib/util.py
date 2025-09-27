@@ -130,11 +130,11 @@ class ResidualRecurrentBlocks(nn.Module):
             state_masks[idx] = state_mask_out
         return x, state_masks, xf_states
 
-    def initial_state(self, batchsize):
+    def initial_state(self, batch_size):
         if "lstm" in self.recurrence_type:
             return [None for b in self.blocks]
         else:
-            return [b.r.initial_state(batchsize) for b in self.blocks]
+            return [b.r.initial_state(batch_size) for b in self.blocks]
 
 
 class ResidualRecurrentBlock(nn.Module):

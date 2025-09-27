@@ -24,7 +24,8 @@ class StateNode(nn.Module):
         init_std=1.0,
         min_std=1e-3,
         learn_std=False,
-        device=None
+        device=None,
+        batch_size=None,
     ):
         """
         Class encapsulating (z_t, h_t) state components:
@@ -46,19 +47,34 @@ class StateNode(nn.Module):
             min_std: Min std clamp for numerical stability
             learn_std: Whether std of z_t and h_t is learnable
             device: Torch device
+            bs: int = 1, default batch size. Must be present if z_dim is chosen
         """
         super().__init__()
+        # TODO still uncertain but fairly reasonable. zeroth state should have no observation z
         assert (z_value is not None or z_dim is not None), \
-            'Must provide z_value or z_dim.'
+            'Must at least provide one of z_value OR z_dim.'
+        assert not (z_value is not None and z_dim is not None), \
+            'Must only provide one z_value or z_dim, not both!'
         assert (a_value is not None or a_dim is not None), \
                 'Must provide h_value or h_dim.'
+        if z_dim is not None:
+            assert (batch_size is not None), \
+                    'Must provide batch_size if you provide z_dim!'
+        self.batch_size = z_value.shape[-1] if z_value is not None else batch_size
         self.state_depth = len(h_state)
         self.min_std = min_std
         self.device = device
 
         # ---- z_t (observation-affected state) ----
-        self.z_dim = z_value.shape[-1] if z_value is not None else z_dim
-        z_init = z_value if z_value is not None else torch.zeros(self.z_dim, device=device)
+        if z_value is not None:
+            self.z_dim = z_value.shape[-1]
+            z_init = z_value
+        elif z_dim is not None:
+            self.z_dim = z_dim
+            z_init = torch.zeros(self.batch_size, self.z_dim, device=device)
+        else:
+            raise AssertionError('How did you get here? Somehow the earlier assertion to check \
+                for either z_value or z_dim is present did not work properly. Sue benjamin goh en yang for bad code')
         self.z_mean = nn.Parameter(z_init)
 
         # ---- h_t (recurrent state, now structured as list of (mask, xf_state)) ----

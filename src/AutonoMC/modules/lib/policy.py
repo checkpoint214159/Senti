@@ -220,9 +220,9 @@ class MinecraftPolicy(nn.Module):
             return pi_latent, state_out
         return (pi_latent, vf_latent), state_out
 
-    def initial_state(self, batchsize):
+    def initial_state(self, batch_size):
         if self.recurrent_layer:
-            return self.recurrent_layer.initial_state(batchsize)
+            return self.recurrent_layer.initial_state(batch_size)
         else:
             return None
 

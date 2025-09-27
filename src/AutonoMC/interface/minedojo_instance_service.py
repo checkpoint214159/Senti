@@ -69,8 +69,8 @@ class MinecraftInstance:
 def main():
 
     parser = argparse.ArgumentParser(description="A persistent minecraft instance")
-
-    parser.add_argument('-r', '--resolution', type=int, nargs=2, default=[160, 256], help='Resolution the minecraft instance will render at.')
+    # height, width. 
+    parser.add_argument('-r', '--resolution', type=int, nargs=2, default=[360, 640], help='Resolution the minecraft instance will render at.')
     parser.add_argument('-t', '--task_id', type=str, default='harvest_wool_with_shears_and_sheep', help='Valid MineDojo task id.')
     parser.add_argument('--host', type=str, default='127.0.0.1')
     parser.add_argument('-p', '--port', type=int, default=8000)

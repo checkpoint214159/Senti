@@ -390,10 +390,10 @@ class SelfAttentionLayer(AttentionLayerBase):
         assert outstate_K.shape[-2] <= self.cache_keep_len
         return (outstate_K, outstate_V), K_bte, V_bte
 
-    def initial_state(self, batchsize, initial_T=0):
+    def initial_state(self, batch_size, initial_T=0):
         return (
-            tu.zeros((batchsize, initial_T, self.x_size), dtype=self.dtype),
-            tu.zeros((batchsize, initial_T, self.x_size), dtype=self.dtype),
+            tu.zeros((batch_size, initial_T, self.x_size), dtype=self.dtype),
+            tu.zeros((batch_size, initial_T, self.x_size), dtype=self.dtype),
         )
 
     def empty_state(self):

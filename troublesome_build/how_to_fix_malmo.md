@@ -103,6 +103,11 @@ Also, if you found a very similar solution to this from [here](https://github.co
 
 to be the location that was searched. If you clone into ~/workspace/, you will still fail the above, since idk why, they by default append the subdirectory MixinGradle-dcfaf61 to whatever url you gave them. So, create that subdirectory and clone MixinGradle into it after.
 
+`Remember to copy it to the build.gradle location that MineDojo looks for. For instance, if you have a venv, it should be somewhere in venv_name/lib/python3.10/site-packages/minedojo/sim/Malmo/Minecraft/build.gradle`
+
+`or for conda ~/.conda/envs/minedojo/lib/python3.9/site-packages/minedojo/sim/Malmo/Minecraft/build.gradle`
+
+Once you copy it there, when doing env.reset, it will 
 
 3. Fixed!
 

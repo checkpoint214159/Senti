@@ -8,9 +8,8 @@ import torch as th
 from torch import nn
 from torch.nn import functional as F
 
-from ActInfAgents.modules.lib import misc, mlp
-from ActInfAgents.modules.lib import torch_util as tu
-from ActInfAgents.modules.lib import util
+from Senti.modules.wm_lib import misc, mlp, util
+from Senti.modules.wm_lib import torch_util as tu
 
 SENTINEL = 0.1337
 

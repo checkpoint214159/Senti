@@ -3,7 +3,6 @@ This module is meant to encapsulate the entire agent.
 Its scope contains all its components.
 Its methods controls the flow of everything.
 """
-import copy
 import json
 import logging
 import random
@@ -13,21 +12,14 @@ import cv2
 import numpy as np
 import requests
 import torch
-from mineclip import MineCLIP
 from torch import nn
 
-from ActInfAgents.modules.agent_utils import StateCache, TensorCache
-from ActInfAgents.modules.lib.action_head import create_action_head
-from ActInfAgents.modules.lib.action_mapping import CameraHierarchicalMapping
-from ActInfAgents.modules.lib.actions import ActionTransformer
-from ActInfAgents.modules.loss import EnergyAggregator
-from ActInfAgents.modules.optim import OptimRegistry
-from ActInfAgents.modules.state import StateNode
-from ActInfAgents.modules.worldmodel import WorldModel
+from Senti.modules.agent_utils import StateCache, TensorCache
+from Senti.modules.loss import EnergyAggregator
+from Senti.modules.optim import OptimRegistry
+from Senti.modules.state import StateNode
+from Senti.modules.worldmodel import WorldModel
 
-# TODO 1/9 -> 8/9 fix wm
-# TODO 8/9 -> 15/9 start work on planning
-# TODO 15/9 -> 22/9 finalize planning
 
 def set_seed(seed: int = 42):
     random.seed(seed)                  # Python random module
@@ -516,7 +508,7 @@ clip_config = {
     'mlp_adapter_spec': 'v0-2.t0',
     'pool_type': 'attn.d2.nh8.glusw',
     'resolution': resolution,
-    'ckpt_path': '/mnt/e/ActInfAgents/weights/attn.pth'
+    'ckpt_path': '/mnt/e/Senti/weights/attn.pth'
 }
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

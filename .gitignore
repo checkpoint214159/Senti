@@ -2,25 +2,13 @@
 *venv*
 
 *__pycache__*
-venv_minerl
 
 # logs
 *logs
 *.log
 
-# dont commit MineDojo for now?
-*MineDojo
-*MineCLIP
-
-# dont commit jar. Might be confusing alzhiemers ben if he wants to 
-# build from scratch, but documentation should be sufficient.
-*.jar
-*MixinGradle-dcfaf61
-
-
-# dont commit paths ofc
+# dont commit checkpoints ofc
 *.pth
-
 
 # other directories
 *outputs

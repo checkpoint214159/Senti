@@ -1,0 +1,6 @@
+attrs>=25.4.0
+numpy>=2.2.6
+opencv-python>=4.11.0.86
+pydantic>=2.12.3
+tensorboard>=2.20.0
+torch>=2.9.0

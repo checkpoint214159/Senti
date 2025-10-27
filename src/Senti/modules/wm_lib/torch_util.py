@@ -16,8 +16,8 @@ import torch.distributions as dis
 import torch.nn.functional as F
 from torch import nn
 
-import ActInfAgents.modules.lib.tree_util as tree_util
-from ActInfAgents.modules.lib import misc
+import Senti.modules.wm_lib.tree_util as tree_util
+from Senti.modules.wm_lib import misc
 
 
 def contextmanager_to_decorator(cm):

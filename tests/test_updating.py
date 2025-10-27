@@ -4,9 +4,9 @@ or the actual model parameters themselves.
 """
 import torch
 
-from ActInfAgents.modules.loss import Loss
-from ActInfAgents.modules.optim import OptimRegistry
-from ActInfAgents.modules.state import StateNode
+from Senti.modules.loss import Loss
+from Senti.modules.optim import OptimRegistry
+from Senti.modules.state import StateNode
 
 from .conftest import default_transition_model
 

@@ -4,10 +4,10 @@ import torch as th
 from torch import nn
 from torch.nn import functional as F
 
-import ActInfAgents.modules.lib.torch_util as tu
-from ActInfAgents.modules.lib.masked_attention import MaskedAttention
-from ActInfAgents.modules.lib.minecraft_util import store_args
-from ActInfAgents.modules.lib.tree_util import tree_map
+import Senti.modules.wm_lib.torch_util as tu
+from Senti.modules.wm_lib.masked_attention import MaskedAttention
+from Senti.modules.wm_lib.minecraft_util import store_args
+from Senti.modules.wm_lib.tree_util import tree_map
 
 
 def get_module_log_keys_recursive(m: nn.Module):

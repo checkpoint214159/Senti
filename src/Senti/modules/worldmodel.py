@@ -2,8 +2,9 @@ import copy
 
 import torch
 import torch.nn.functional as F
-from ActInfAgents.modules.lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
 from torch import nn
+
+from Senti.modules.wm_lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
 
 
 class WorldModel(nn.Module):

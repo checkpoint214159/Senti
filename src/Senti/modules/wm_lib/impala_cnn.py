@@ -5,9 +5,9 @@ from typing import Dict, List, Optional
 from torch import nn
 from torch.nn import functional as F
 
-from ActInfAgents.modules.lib import misc
-from ActInfAgents.modules.lib import torch_util as tu
-from ActInfAgents.modules.lib.util import FanInInitReLULayer
+from Senti.modules.wm_lib import misc
+from Senti.modules.wm_lib import torch_util as tu
+from Senti.modules.wm_lib.util import FanInInitReLULayer
 
 
 class CnnBasicBlock(nn.Module):

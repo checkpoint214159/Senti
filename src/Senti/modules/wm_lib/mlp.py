@@ -1,8 +1,8 @@
 import torch as th
 from torch import nn
 
-from ActInfAgents.modules.lib import misc
-from ActInfAgents.modules.lib import torch_util as tu
+from Senti.modules.wm_lib import misc
+from Senti.modules.wm_lib import torch_util as tu
 
 
 class MLP(nn.Module):

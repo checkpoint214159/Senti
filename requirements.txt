@@ -1,0 +1,6 @@
+numpy
+pydantic
+torch
+tensorboard
+attrs
+opencv-python

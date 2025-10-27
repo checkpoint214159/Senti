@@ -4,8 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 
-from ActInfAgents.modules.lib.action_head import fan_in_linear
-from ActInfAgents.modules.lib.normalize_ewma import NormalizeEwma
+from Senti.modules.wm_lib.normalize_ewma import NormalizeEwma
 
 
 class ScaledMSEHead(nn.Module):

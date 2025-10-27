@@ -5,16 +5,15 @@ from typing import Dict, Optional
 import numpy as np
 import torch as th
 from gym3.types import DictType
-from ActInfAgents.modules.lib.action_head import make_action_head
-from ActInfAgents.modules.lib.action_mapping import CameraHierarchicalMapping
-from ActInfAgents.modules.lib.impala_cnn import ImpalaCNN
-from ActInfAgents.modules.lib.misc import transpose
-from ActInfAgents.modules.lib.normalize_ewma import NormalizeEwma
-from ActInfAgents.modules.lib.scaled_mse_head import ScaledMSEHead
-from ActInfAgents.modules.lib.tree_util import tree_map
-from ActInfAgents.modules.lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
 from torch import nn
 from torch.nn import functional as F
+
+from Senti.modules.wm_lib.impala_cnn import ImpalaCNN
+from Senti.modules.wm_lib.misc import transpose
+from Senti.modules.wm_lib.normalize_ewma import NormalizeEwma
+from Senti.modules.wm_lib.scaled_mse_head import ScaledMSEHead
+from Senti.modules.wm_lib.tree_util import tree_map
+from Senti.modules.wm_lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
 
 
 class ImgPreprocessing(nn.Module):

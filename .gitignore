@@ -3,6 +3,9 @@
 
 *__pycache__*
 
+# build artifacts
+*egg-info*
+
 # logs
 *logs
 *.log

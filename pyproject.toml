@@ -10,12 +10,12 @@ authors = [{ name = "ben" }]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "attrs>=25.4.0",
-    "numpy>=2.2.6",
-    "opencv-python>=4.11.0.86",
-    "pydantic>=2.12.3",
-    "tensorboard>=2.20.0",
-    "torch>=2.9.0",
+    "attrs",
+    "numpy",
+    "opencv-python",
+    "pydantic",
+    "tensorboard",
+    "torch",
 ]
 
 [tool.setuptools.packages.find]

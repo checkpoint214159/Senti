@@ -2,7 +2,7 @@ import pytest
 import torch
 from mineclip import MineCLIP
 
-from AutonoMC.modules.worldmodel import WorldModel
+from ActInfAgents.modules.worldmodel import WorldModel
 
 # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -v
 
@@ -18,7 +18,7 @@ src_clip_config = {
     'mlp_adapter_spec': 'v0-2.t0',
     'pool_type': 'attn.d2.nh8.glusw',
     'resolution': resolution,
-    'ckpt_path': '/mnt/e/AutonoMC/weights/attn.pth'
+    'ckpt_path': '/mnt/e/ActInfAgents/weights/attn.pth'
 }
 latent_image_dim = src_clip_config.get('image_feature_dim', 512)
 timestep_size = 1

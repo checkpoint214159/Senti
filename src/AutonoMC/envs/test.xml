@@ -1,8 +1,0 @@
-<ServerSection>
-    <ServerInitialConditions>
-        <!-- Absolute or relative path to the world folder -->
-        <WorldPath>/mnt/e/AutonoMC/minecraft_worlds/saves/test/level.dat"</WorldPath>
-        <!-- optional: keep existing terrain etc. -->
-        <AllowSpawning>true</AllowSpawning>
-    </ServerInitialConditions>
-</ServerSection>

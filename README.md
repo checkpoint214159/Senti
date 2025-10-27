@@ -1,4 +1,4 @@
-# AutonoMC
+# ActInfAgents
 
 Hi, im ben. I have nothing better to do with my life except ponder its existence and derivations. Lets make a minecraft agent!
 

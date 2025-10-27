@@ -4,9 +4,9 @@ or the actual model parameters themselves.
 """
 import torch
 
-from AutonoMC.modules.loss import Loss
-from AutonoMC.modules.optim import OptimRegistry
-from AutonoMC.modules.state import StateNode
+from ActInfAgents.modules.loss import Loss
+from ActInfAgents.modules.optim import OptimRegistry
+from ActInfAgents.modules.state import StateNode
 
 from .conftest import default_transition_model
 

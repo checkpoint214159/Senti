@@ -5,7 +5,7 @@ or the actual model parameters themselves.
 import torch
 
 from Senti.modules.loss import Loss
-from Senti.modules.optim import OptimRegistry
+from Senti.modules.optimregistry import OptimRegistry
 from Senti.modules.state import StateNode
 
 from .conftest import default_transition_model

@@ -1,0 +1,9 @@
+# populate this config. structure
+# we will populate the agent body config with this
+
+encoders:
+
+decoders:
+
+worldmodel:
+

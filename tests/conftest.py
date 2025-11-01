@@ -2,7 +2,7 @@ import pytest
 import torch
 from mineclip import MineCLIP
 
-from Senti.modules.worldmodel import WorldModel
+from Senti.modules.worldmodel.worldmodel import WorldModel
 
 # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -v
 

@@ -4,7 +4,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from Senti.modules.wm_lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
+from Senti.modules.worldmodel.wm_lib.util import (
+    FanInInitReLULayer,
+    ResidualRecurrentBlocks,
+)
 
 
 class WorldModel(nn.Module):

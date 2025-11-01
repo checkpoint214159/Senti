@@ -14,11 +14,11 @@ import requests
 import torch
 from torch import nn
 
-from Senti.modules.agent_utils import StateCache, TensorCache
-from Senti.modules.loss import EnergyAggregator
-from Senti.modules.optim import OptimRegistry
-from Senti.modules.state import StateNode
-from Senti.modules.worldmodel import WorldModel
+from Senti.modules.optim.loss import EnergyAggregator
+from Senti.modules.optim.optimregistry import OptimRegistry
+from Senti.modules.utils.agent_utils import StateCache, TensorCache
+from Senti.modules.utils.state import StateNode
+from Senti.modules.worldmodel.worldmodel import WorldModel
 
 
 def set_seed(seed: int = 42):

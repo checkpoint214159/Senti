@@ -16,6 +16,7 @@ dependencies = [
     "pydantic",
     "tensorboard",
     "torch",
+    "omegaconf",
 ]
 
 [tool.setuptools.packages.find]

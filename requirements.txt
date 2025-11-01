@@ -4,3 +4,4 @@ torch
 tensorboard
 attrs
 opencv-python
+omegaconf

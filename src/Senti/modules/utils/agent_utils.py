@@ -4,7 +4,7 @@ from typing import Any, Type
 
 import torch
 
-from Senti.modules.state import StateNode
+from Senti.modules.utils.state import StateNode
 
 
 class Cache:

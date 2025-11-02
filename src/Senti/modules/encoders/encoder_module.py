@@ -1,1 +1,1 @@
-# TODO populate this
+# encoder module to define the behaviour of how to pass to various encoders

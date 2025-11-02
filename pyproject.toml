@@ -17,6 +17,8 @@ dependencies = [
     "tensorboard",
     "torch",
     "omegaconf",
+    "pufferlib",
+    "nmmo>=2.1.2",
 ]
 
 [tool.setuptools.packages.find]

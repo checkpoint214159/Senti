@@ -1,29 +1,25 @@
 # maps from latent state to each action bucket in nmmo
 # temporarily use nmmo_baseliens/agent_zoo/yaofeng
 
-import torch
-import torch.nn.functional as F
-
 import pufferlib
-import pufferlib.models
 import pufferlib.emulation
-
+import pufferlib.models
+import torch
+from torch import nn
+import torch.nn.functional as F
 from nmmo.entity.entity import EntityState
 
+from Senti.registry import ENCODERS
+
 EntityId = EntityState.State.attr_name_to_col["id"]
-
-
-class Recurrent(pufferlib.models.RecurrentWrapper):
-    def __init__(self, env, policy, input_size=256, hidden_size=256, num_layers=2):
-        super().__init__(env, policy, input_size, hidden_size, num_layers)
-
 
 def orthogonal_init(layer, gain=1.0):
     torch.nn.init.orthogonal_(layer.weight, gain=gain)
     torch.nn.init.constant_(layer.bias, 0)
 
 
-class NmmoEncoders(pufferlib.models.Policy):  # TODO: change Policy from pufferlib for now?
+@ENCODERS.register_module()
+class NmmoEncoders(nn.Module):  # TODO: change Policy from pufferlib for now?
     def __init__(self, env, input_size=256, hidden_size=256, task_size=2048):
         super().__init__(env)
 
@@ -40,10 +36,11 @@ class NmmoEncoders(pufferlib.models.Policy):  # TODO: change Policy from pufferl
         orthogonal_init(self.proj_fc)
         orthogonal_init(self.value_head)
 
-    def encode_observations(self, flat_observations):
-        env_outputs = pufferlib.emulation.unpack_batched_obs(
-            flat_observations, self.unflatten_context
-        )
+    def forward(self, env_outputs: dict):
+        # TODO: temporarily dont have this here?
+        # env_outputs = pufferlib.emulation.unpack_batched_obs(
+        #     flat_observations, self.unflatten_context
+        # )
         tile = self.tile_encoder(env_outputs["Tile"])
         player_embeddings, my_agent = self.player_encoder(
             env_outputs["Entity"], env_outputs["AgentId"][:, 0]
@@ -58,7 +55,9 @@ class NmmoEncoders(pufferlib.models.Policy):  # TODO: change Policy from pufferl
         task = self.task_encoder(env_outputs["Task"])
 
         obs = torch.cat([tile, my_agent, inventory, market, task], dim=-1)
+        print('obs shape in encoder_observations???', obs.shape)
         obs = F.relu(self.proj_fc(obs))
+        print('after fc and relu???', obs.shape)
 
         return obs, (
             player_embeddings,
@@ -66,7 +65,6 @@ class NmmoEncoders(pufferlib.models.Policy):  # TODO: change Policy from pufferl
             market_embeddings,
             env_outputs["ActionTargets"],
         )
-
 
 
 class ResnetBlock(torch.nn.Module):
@@ -89,7 +87,8 @@ class ResnetBlock(torch.nn.Module):
 class TileEncoder(torch.nn.Module):
     def __init__(self, input_size):
         super().__init__()
-        self.type_embedding = torch.nn.Embedding(16, 62)
+        self.type_embedding = torch.nn.Embedding(16, 62)  # hardcode to 16 types for now?
+        # 62 concat with 2 gives us 64, which we pump into tile_resnet
 
         self.tile_resnet = ResnetBlock(64)
         self.tile_conv_1 = torch.nn.Conv2d(64, 32, 3)
@@ -136,7 +135,7 @@ class MLPBlock(torch.nn.Module):
 class PlayerEncoder(torch.nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
-        self.entity_dim = 31
+        self.entity_dim = 31  # once again hardcoded for now
         self.player_offset = torch.tensor([i * 256 for i in range(self.entity_dim)])
         self.embedding = torch.nn.Embedding(self.entity_dim * 256, 32)
 

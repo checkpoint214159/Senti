@@ -8,8 +8,8 @@ import torch as th
 from torch import nn
 from torch.nn import functional as F
 
-from Senti.modules.wm_lib import misc, mlp, util
-from Senti.modules.wm_lib import torch_util as tu
+from Senti.modules.worldmodel.wm_lib import misc, mlp, util
+from Senti.modules.worldmodel.wm_lib import torch_util as tu
 
 SENTINEL = 0.1337
 

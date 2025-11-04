@@ -8,12 +8,15 @@ from gym3.types import DictType
 from torch import nn
 from torch.nn import functional as F
 
-from Senti.modules.wm_lib.impala_cnn import ImpalaCNN
-from Senti.modules.wm_lib.misc import transpose
-from Senti.modules.wm_lib.normalize_ewma import NormalizeEwma
-from Senti.modules.wm_lib.scaled_mse_head import ScaledMSEHead
-from Senti.modules.wm_lib.tree_util import tree_map
-from Senti.modules.wm_lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
+from Senti.modules.worldmodel.wm_lib.impala_cnn import ImpalaCNN
+from Senti.modules.worldmodel.wm_lib.misc import transpose
+from Senti.modules.worldmodel.wm_lib.normalize_ewma import NormalizeEwma
+from Senti.modules.worldmodel.wm_lib.scaled_mse_head import ScaledMSEHead
+from Senti.modules.worldmodel.wm_lib.tree_util import tree_map
+from Senti.modules.worldmodel.wm_lib.util import (
+    FanInInitReLULayer,
+    ResidualRecurrentBlocks,
+)
 
 
 class ImgPreprocessing(nn.Module):

@@ -3,9 +3,9 @@ import functools
 import torch as th
 from torch import nn
 
-import Senti.modules.wm_lib.xf as xf
-from Senti.modules.wm_lib.minecraft_util import store_args
-from Senti.modules.wm_lib.tree_util import tree_map
+import Senti.modules.worldmodel.wm_lib.xf as xf
+from Senti.modules.worldmodel.wm_lib.store_args import store_args
+from Senti.modules.worldmodel.wm_lib.tree_util import tree_map
 
 
 @functools.lru_cache()

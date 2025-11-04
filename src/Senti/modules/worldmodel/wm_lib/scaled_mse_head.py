@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 
-from Senti.modules.wm_lib.normalize_ewma import NormalizeEwma
+from Senti.modules.worldmodel.wm_lib.normalize_ewma import NormalizeEwma
 
 
 class ScaledMSEHead(nn.Module):

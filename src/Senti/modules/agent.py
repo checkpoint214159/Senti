@@ -10,15 +10,20 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from omegaconf import OmegaConf
 import requests
 import torch
+from omegaconf.dictconfig import DictConfig
 from torch import nn
 
+import Senti
+from Senti.modules.autoencoders.nmmo_encoders import NmmoEncoders
 from Senti.modules.optim.loss import EnergyAggregator
 from Senti.modules.optim.optimregistry import OptimRegistry
 from Senti.modules.utils.agent_utils import StateCache, TensorCache
 from Senti.modules.utils.state import StateNode
 from Senti.modules.worldmodel.worldmodel import WorldModel
+from Senti.registry import AUTOENCODERS
 
 
 def set_seed(seed: int = 42):
@@ -70,8 +75,7 @@ class Agent(nn.Module):
     """
 
     def __init__(self,
-        clip_config=None,
-        num_policies=None,
+        config: DictConfig,
         state_depth=1,  # state depth, basically num of recurrent layers
         history=3,
         h_dim=8,
@@ -85,9 +89,6 @@ class Agent(nn.Module):
         """
         # admin stuff
         super().__init__()
-        path = clip_config.pop('ckpt_path', None)
-        self.latent_image_dim = clip_config.get('image_feature_dim', 512)
-        self.amortized_inf = True
         self.history = history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -111,9 +112,8 @@ class Agent(nn.Module):
         self.optimizer_registry = OptimRegistry()
 
         # encoder to encode incoming observation(s)
-        self.obs_encoder = MineCLIP(**clip_config)
-        self.obs_encoder.load_ckpt(path, strict=True)
-        logging.info("Successfully loaded MineCLIP encoder.")
+        self.obs_encoder = AUTOENCODERS.build("NmmoAE", config)
+        logging.info("Successfully loaded NmmoEncoder")
 
         # models
         # maps latent observation to state, for now only takes latent obs of image
@@ -149,14 +149,6 @@ class Agent(nn.Module):
             n_recurrence_layers=state_depth,
             timesteps=self.timestep_size,
         )
-
-        self.pi_head = create_action_head(
-            n_camera_bins=11,
-            latent_size=h_dim,
-            mapper_class=CameraHierarchicalMapping,
-            temperature=2.0
-        )
-        self.action_transformer = ActionTransformer(**ACTION_TRANSFORMER_KWARGS)
 
         self._dummy_first = torch.from_numpy(np.array((False,))).to(device).unsqueeze(1)
 
@@ -323,12 +315,10 @@ class Agent(nn.Module):
                 self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
                 print(f"[Step {step}] VFE = {total_vfe:.6f}") if print_statements else None
 
-                if self.amortized_inf:
-                    # param learning for amortized case
-                    self.optimizer_registry.do_step(
-                        key='inference',
-                        loss=total_vfe
-                    )
+                self.optimizer_registry.do_step(
+                    key='inference',
+                    loss=total_vfe
+                )
 
         return total_vfe
 
@@ -500,53 +490,22 @@ class Agent(nn.Module):
         """
 
 
-resolution = [160, 256]
-clip_config = {
-    'arch': 'vit_base_p16_fz.v2.t2',
-    'hidden_dim': 512,
-    'image_feature_dim': 512,
-    'mlp_adapter_spec': 'v0-2.t0',
-    'pool_type': 'attn.d2.nh8.glusw',
-    'resolution': resolution,
-    'ckpt_path': '/mnt/e/Senti/weights/attn.pth'
-}
+config = OmegaConf.load("/mnt/e/nmmo_actinf/Senti/src/Senti/config.yaml")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-agent = Agent(clip_config=clip_config).to(device)
-
-noop_action = {
-    "attack": [1],
-    "back": [0],
-    "forward": [0],
-    "jump": [1],
-    "left": [0],
-    "right": [0],
-    "sneak": [0],
-    "sprint": [0],
-    "use": [0],
-    "drop": [0],
-    "inventory": [0],
-    "hotbar.1": [0],
-    "hotbar.2": [0],
-    "hotbar.3": [0],
-    "hotbar.4": [0],
-    "hotbar.5": [0],
-    "hotbar.6": [0],
-    "hotbar.7": [0],
-    "hotbar.8": [0],
-    "hotbar.9": [0],
-    "camera": [[0.0, 0.0]]
-}
+agent = Agent(config).to(device)
 
 for i in range(10):
     response = requests.post(
         'http://localhost:8000/take_step',
-        json={
-            'action': noop_action,
-        }
+        # json={
+        #     'action': noop_action,
+        # }
     )
 
     return_dict = json.loads(response.content)
+    print('return_dict', return_dict)
+    sgdhf
     # print('return_dict', return_dict['obs'].keys())
     # print('return dict obs life stats', return_dict['obs']['life_stats'])
     # print('return dict obs use_item', return_dict['obs']['use_item'])

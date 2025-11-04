@@ -1,13 +1,39 @@
+import functools
+import inspect
 from typing import Dict, Optional
 
 import torch as th
 from torch import nn
 from torch.nn import functional as F
 
-import Senti.modules.wm_lib.torch_util as tu
-from Senti.modules.wm_lib.masked_attention import MaskedAttention
-from Senti.modules.wm_lib.minecraft_util import store_args
-from Senti.modules.wm_lib.tree_util import tree_map
+import Senti.modules.worldmodel.wm_lib.torch_util as tu
+from Senti.modules.worldmodel.wm_lib.masked_attention import MaskedAttention
+from Senti.modules.worldmodel.wm_lib.tree_util import tree_map
+
+
+def store_args(method):
+    """Stores provided method args as instance attributes."""
+    argspec = inspect.getfullargspec(method)
+    defaults = {}
+    if argspec.defaults is not None:
+        defaults = dict(zip(argspec.args[-len(argspec.defaults) :], argspec.defaults))
+    if argspec.kwonlydefaults is not None:
+        defaults.update(argspec.kwonlydefaults)
+    arg_names = argspec.args[1:]
+
+    @functools.wraps(method)
+    def wrapper(*positional_args, **keyword_args):
+        self = positional_args[0]
+        # Get default arg values
+        args = defaults.copy()
+        # Add provided arg values
+        for name, value in zip(arg_names, positional_args[1:]):
+            args[name] = value
+        args.update(keyword_args)
+        self.__dict__.update(args)
+        return method(*positional_args, **keyword_args)
+
+    return wrapper
 
 
 def get_module_log_keys_recursive(m: nn.Module):

@@ -1,19 +1,29 @@
 # populate this config. structure
 # we will populate the agent body config with this
 
-encoders:
-  TileEncoder
-  PlayerEncoder
-  ItemEncoder
-  InventoryEncoder
-  MarketEncoder
-  TaskEncoder
+agent:
+  z_dim: 8
+  h_dim: 8
+  state_depth: 1
+  history: 3
+  device: cuda
+  batch: 128
 
-decoders:
+nmmo_encoder:
+  name: NmmoEncoders
+  input_size: 8
+  hidden_size: ${agent.z_dim}
+  device: ${agent.device}
+
+nmmo_decoder:
+  hidden_size: ${agent.z_dim}
 
 worldmodel:
 
-
+nmmo_ae:
+  encoder: ${nmmo_encoder}
+  decoder: ${nmmo_decoder}
+  
 
 env:
   ALLOW_MOVE_INTO_OCCUPIED_TILE: True

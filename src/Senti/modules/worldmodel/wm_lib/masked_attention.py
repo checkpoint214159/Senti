@@ -71,7 +71,6 @@ def get_mask(first_b11: th.Tensor, state_mask: th.Tensor, t: int, T: int, maxlen
         state_mask: updated state_mask
     """
     b = first_b11.shape[0]
-
     if state_mask is None:
         state_mask = th.zeros((b, 1, T - t), dtype=bool, device=device)
 

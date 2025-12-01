@@ -2106,7 +2106,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "omegaconf" },
     { name = "opencv-python" },
-    { name = "pufferlib" },
+    { name = "pufferlib", specifier = "==3.0" },
     { name = "pydantic" },
     { name = "tensorboard" },
     { name = "torch" },

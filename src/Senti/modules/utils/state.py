@@ -3,6 +3,13 @@ import copy
 import torch
 import torch.nn as nn
 
+"""
+NOTE: Development of this state / StateNode class was tiresome, as I had to find a way to
+make some nice flexible class to contain state of arbitrary shape and complexity, that is also
+learnable / parameterizable. This reduces the annoyance of dealing with custom data types
+like nn.Parameters in nested lists, dict with at arbitrary keys, etc etc. which I'm facing
+when re-purposing the transformer module (from openAI? idk whoever did VPT for minecraft)
+"""
 
 class RecurrentMemory(nn.Module):
     def __init__(self, key: torch.Tensor, value: torch.Tensor):
@@ -145,14 +152,16 @@ class StateNode(nn.Module):
         """
         Property to retrieve a flattened form of h_states.
         Right now hardcoded to having keys and values under a module, and a list of these form h.
-        Retrieves as follows: [depth_0_keys, depth_0_values, depth_1_keys, depth_1_values, ...]
+        TODO generalize this to arbitrary representations of state: i.e more than or less than keys
+        Retrieves as follows: [depth_0_keys, depth_0_values, depth_1_keys, depth_1_values, ...] of N length
+        After extending the list, then stack it according to B,N,... (preserve batch as first dim)
         Right now both keys and values are of shape (1, 1, hidden_dim), we cat along a new dimension at zero
         """
         h_states = []
         for mod in self.h_modules:
             h_states.extend([mod.key, mod.value])
-        # print('HI IM HERE TO REMIND YOU TO CHECK IF THIS GENERALIZES TO MULTIPLE DEPTHS')
-        h_states = torch.stack(h_states)
+        # TODO HI IM HERE TO REMIND YOU TO CHECK IF THIS GENERALIZES TO MULTIPLE DEPTHS
+        h_states = torch.stack(h_states, 1)  # preserve batch as first dim
 
         return h_states
     
@@ -161,7 +170,7 @@ class StateNode(nn.Module):
         """
         Helper func to do what the property flattened_h_states does, except
         to an incoming h_state not necessarily tied to us.
-        h_states: [(h_keys, h_values), (h_keys, h_values), ...]
+        h_states: [(h_keys, h_values), (h_keys, h_values), ...] -> into:
         """
         h_states = [x for tpl in h_states for x in tpl]
         h_states = torch.stack(h_states)
@@ -202,6 +211,7 @@ class StateNode(nn.Module):
         Basically the precise formatting required to feed into the WorldModel, minus state masks.
         """
         h = [(mod.key, mod.value) for mod in self.h_modules]
+        print('state shapes?', [(mod.key.shape, mod.value.shape) for mod in self.h_modules])
 
         return h
     

@@ -17,7 +17,7 @@ dependencies = [
     "tensorboard",
     "torch",
     "omegaconf",
-    "pufferlib",
+    "pufferlib==3.0",
     "nmmo>=2.1.2",
 ]
 

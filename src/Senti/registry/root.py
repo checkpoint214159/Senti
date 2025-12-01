@@ -5,4 +5,4 @@ AUTOENCODERS = Registry('autoencoders')
 
 ENCODERS = Registry('encoders')
 
-
+DECODERS = Registry('decoders')

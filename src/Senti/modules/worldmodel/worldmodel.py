@@ -151,6 +151,12 @@ class WorldModel(nn.Module):
 
     def initial_state(self, batch_size):
         if self.recurrent_layer:
-            return self.recurrent_layer.initial_state(batch_size)
+            h = self.recurrent_layer.initial_state(batch_size)
+            state_masks, h_states = [], []
+            for depth in h:
+                state_mask, h_state = depth
+                state_masks.append(state_mask)
+                h_states.append(h_state)
+            return state_masks, h_states
         else:
             return None

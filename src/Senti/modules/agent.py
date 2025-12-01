@@ -10,20 +10,19 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from omegaconf import OmegaConf
 import requests
 import torch
+from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-import Senti
-from Senti.modules.autoencoders.nmmo_encoders import NmmoEncoders
+from Senti.modules.dataclasses.pomdpstate import POMDPState
 from Senti.modules.optim.loss import EnergyAggregator
 from Senti.modules.optim.optimregistry import OptimRegistry
-from Senti.modules.utils.agent_utils import StateCache, TensorCache
 from Senti.modules.utils.state import StateNode
 from Senti.modules.worldmodel.worldmodel import WorldModel
 from Senti.registry import AUTOENCODERS
+from Senti.src.Senti.modules.utils.caches import Cache, StateTimestepCache, TensorCache
 
 
 def set_seed(seed: int = 42):
@@ -76,9 +75,6 @@ class Agent(nn.Module):
 
     def __init__(self,
         config: DictConfig,
-        state_depth=1,  # state depth, basically num of recurrent layers
-        history=3,
-        h_dim=8,
     ):
         """
         The agent contains the following modules:
@@ -89,20 +85,22 @@ class Agent(nn.Module):
         """
         # admin stuff
         super().__init__()
-        self.history = history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
-        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
+        agent_config = config.agent
+        self.history = agent_config.history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
+        self.device = torch.device(agent_config.device)
+        self.batch_size = agent_config.batch
+        
         # observations and states cache.
-        self.states_cache = StateCache()
-        self.observation_cache = TensorCache()
+        self.states_cache = StateTimestepCache(state_type=POMDPState)
+        self.observation_cache = Cache(value_type=dict)
         self.latent_observation_cache = TensorCache()
         self.action_cache = TensorCache()
         self.latent_action_cache = TensorCache()
 
         # dimensionality and tensor shapes
-        self.state_depth = state_depth
-        self.h_dim = h_dim
-        self.z_dim = self.h_dim
+        self.state_depth = agent_config.state_depth
+        self.h_dim = agent_config.h_dim
+        self.z_dim = agent_config.z_dim
         self.a_dim = self.h_dim
         self.timestep_size = 1  # TODO clarify its use. right now, timestep_size refers to the time dim
         # of the incoming x when feeding into recurrent blocks, keeping at 1 for now
@@ -112,27 +110,28 @@ class Agent(nn.Module):
         self.optimizer_registry = OptimRegistry()
 
         # encoder to encode incoming observation(s)
-        self.obs_encoder = AUTOENCODERS.build("NmmoAE", config)
-        logging.info("Successfully loaded NmmoEncoder")
+        self.obs_autoencoder = AUTOENCODERS.build("NmmoAE", config)
+        logging.info("Successfully loaded NmmoAE")
 
         # models
+        self.latent_obs_dim = self.obs_autoencoder.hidden_size
         # maps latent observation to state, for now only takes latent obs of image
         self.z_encoder = nn.Sequential(
-            nn.Linear(self.latent_image_dim, self.z_dim),
+            nn.Linear(self.latent_obs_dim, self.z_dim),
             nn.LayerNorm(self.z_dim),
             nn.ReLU()
         )  # P(z|o)
         # maps states to latent observation
         self.z_decoder = nn.Sequential(
-            nn.Linear(self.z_dim, self.latent_image_dim),
-            nn.LayerNorm(self.latent_image_dim),
+            nn.Linear(self.z_dim, self.latent_obs_dim),
+            nn.LayerNorm(self.latent_obs_dim),
             nn.ReLU()
         ) # P(o|z).
         self.transition_model = WorldModel(
             recurrence_type="transformer",
-            attention_memory_size=2 * self.timestep_size,
+            attention_memory_size=2 * self.timestep_size,  # TODO man fuck me for using magic numbers
             hidsize=self.h_dim,
-            n_recurrence_layers=state_depth,
+            n_recurrence_layers=self.state_depth,
             timesteps=self.timestep_size,
         )
         # for now, concat the latent prev action and latent obs together, then do preprocessing to map it to the 
@@ -146,11 +145,12 @@ class Agent(nn.Module):
             recurrence_type="transformer",
             attention_memory_size=self.wm_attention_size,
             hidsize=self.h_dim,
-            n_recurrence_layers=state_depth,
+            n_recurrence_layers=self.state_depth,
             timesteps=self.timestep_size,
         )
 
-        self._dummy_first = torch.from_numpy(np.array((False,))).to(device).unsqueeze(1)
+        self._dummy_first = torch.from_numpy(
+            np.full((self.batch_size, 1), False, dtype=bool)).to(self.device)
 
         # optimization
         inference_params = (
@@ -172,21 +172,19 @@ class Agent(nn.Module):
 
         self.curr_timestep = 0
         self.window = range(self.curr_timestep - self.history, self.curr_timestep)
-    
-    def initialize_state_node(self, t, z):
-        # TODO: generalize further for during planning?
-        if t == 0:
-            initial = self.transition_model.initial_state(batch_size=1)  # list[tuple[None, tuple[torch.Tensor]]]
-            h_masks, h_states = StateNode.unpack_mask_states(initial)
-            self.world_model.state_mask = list(h_masks)
-            h_states = list(h_states)
-            # print('h_states shape init trans model?', [[t.shape for t in thing] for thing in h_states])
+        self.to(self.device)
 
+    def initialize_state_node(self, t, z):
+        if t == 0:
+            h_masks, h_states = self.transition_model.initial_state(
+                batch_size=self.batch_size)  # list[tuple[None, tuple[torch.Tensor]]]
+            self.world_model.state_mask = list(h_masks)
+            # h_states = list(h_states)
+            
         else:
             state = self.states_cache.get(t - 1)
             am1, zm1 = state.a, state.z_mean
             _, h_states = self.forward_transition_model(am1, zm1, state=state)
-            # print('h_states shape trans model?', [[t.shape for t in thing] for thing in h_states])
 
         self.states_cache.add(t, StateNode(
             h_state=h_states,
@@ -222,7 +220,7 @@ class Agent(nn.Module):
         for t in self.observation_cache.keys():
             if not self.latent_observation_cache.has(t):
                 o = self.observation_cache.get(t)
-                lat_o = self.obs_encoder.forward_image_features(o) # (image) -> (clip latent size=512)
+                lat_o, others = self.obs_autoencoder.encode(o) # (image)
                 z = self.z_encoder(lat_o)  # (all latent_obs) -> (z)
                 self.initialize_state_node(t, z)
                 self.latent_observation_cache.add(t, lat_o)
@@ -239,7 +237,7 @@ class Agent(nn.Module):
         self.optimizer_registry.register_optim('states_cache', all_params, optim_name='SGD', **kwargs)
 
     def forward(self,
-                observations,
+                observations: dict,
             ):
         """
         Order of execution:
@@ -387,31 +385,38 @@ class Agent(nn.Module):
         """
         state_calculations = []
         qs_t = self.states_cache.get(timestep)
-        s_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None
-        s_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None
+        s_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None  # imperative and breaks responsibility but very verbose and clear
+        s_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None  # especially considering this whole function is quite noisy
         ps_t = P_states.get(timestep)
 
+        qh_t = qs_t.flattened_h_states
+        ph_t = ps_t.flattened_h_states
         state_calculations.append(
-            (self.loss.kl_divergence, qs_t.flattened_h_states, ps_t.flattened_h_states))
+            ('qh_t vs ph_t', self.loss.kl_divergence,
+            qh_t, ph_t))
 
         # -------- prior from t-1 -------- 
-        ph_from_tm1, qh_tm1 = None, None
+        ph_t_from_tm1, qh_tm1 = None, None
         if s_tm1 is not None:
             qh_tm1, qz_tm1, a_tm1 = s_tm1.get_h_states(), s_tm1.z_mean, s_tm1.a
-            _, ph_from_tm1 = self.forward_transition_model(a_tm1, qz_tm1, h=qh_tm1)
-            ph_from_tm1 = StateNode.flatten(ph_from_tm1[0])  # TODO hardcoded to depth = 1 for now i think
+            _, ph_t_from_tm1 = self.forward_transition_model(a_tm1, qz_tm1, h=qh_tm1)
+            ph_t_from_tm1 = StateNode.flatten(ph_t_from_tm1[0])  # TODO hardcoded to depth = 1 for now i think
+            print('ph_t_from_tm1.shape after statenode flatten', ph_t_from_tm1.shape)
+            print('qh_t shape?', qh_t.shape)
             state_calculations.append(
-                (self.loss.kl_divergence, qs_t.flattened_h_states, ph_from_tm1))
+                ('qh_t vs tm1 -> ph_t', self.loss.kl_divergence,
+                qh_t, ph_t_from_tm1))
 
         # -------- would-be h-prior at t+1 under current belief -------- 
         ph_at_tp1, qh_tp1 = None, None
         qh_t, qz_t, a_t = qs_t.get_h_states(), qs_t.z_mean, qs_t.a
         if s_tp1 is not None:
             _, ph_at_tp1 = self.forward_transition_model(a_t, qz_t, h=qh_t)
-            ph_at_tp1 = StateNode.flatten(ph_at_tp1[0])
+            ph_at_tp1 = StateNode.flatten(ph_at_tp1[0])  # TODO hardcoded to depth = 1 for now i think
             qh_tp1 = s_tp1.flattened_h_states
             state_calculations.append(
-                (self.loss.kl_divergence, qh_tp1, ph_at_tp1),
+                ('qh_tp1 vs t -> ph_tp1', self.loss.kl_divergence,  # TODO: better naming convention here??
+                qh_tp1, ph_at_tp1),
             )
         states_energy = self.loss.compute_energy(state_calculations)
 
@@ -420,7 +425,7 @@ class Agent(nn.Module):
         lat_o_pred = self.z_decoder(qz_t)
         lat_o_true = self.latent_observation_cache.get(timestep)
         obs_negative_log = self.loss.compute_energy([
-            (self.loss.log_likelihood, lat_o_pred, lat_o_true),
+            ('decode loss', self.loss.log_likelihood, lat_o_pred, lat_o_true),
         ])
         
         total_energy = states_energy - obs_negative_log
@@ -490,36 +495,29 @@ class Agent(nn.Module):
         """
 
 
-config = OmegaConf.load("/mnt/e/nmmo_actinf/Senti/src/Senti/config.yaml")
+# config = OmegaConf.load("/mnt/e/nmmo_actinf/Senti/src/Senti/config.yaml")
+# agent = Agent(config)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-agent = Agent(config).to(device)
+# def unconvert(obj):
+#     if isinstance(obj, dict):
+#         return {k: unconvert(v) for k, v in obj.items()}
+#     if isinstance(obj, list):
+#         return torch.from_numpy(np.asarray(obj).astype(np.float32)).to(device)
+#     return obj
 
-for i in range(10):
-    response = requests.post(
-        'http://localhost:8000/take_step',
-        # json={
-        #     'action': noop_action,
-        # }
-    )
+# for i in range(10):
+#     response = requests.post(
+#         'http://localhost:8000/take_step',
+#         # json={
+#         #     'action': noop_action,
+#         # }
+#     )
 
-    return_dict = json.loads(response.content)
-    print('return_dict', return_dict)
-    sgdhf
-    # print('return_dict', return_dict['obs'].keys())
-    # print('return dict obs life stats', return_dict['obs']['life_stats'])
-    # print('return dict obs use_item', return_dict['obs']['use_item'])
-    pic = np.asarray(return_dict['obs']['pov']).astype(np.uint8)
-    print('pic.shape', pic.shape)
+#     return_dict = unconvert(json.loads(response.content))
+#     print('return_dict code', return_dict['view_code'])
+#     print('return_dict tensor data', return_dict['data'].shape)
 
-    arr = cv2.resize(pic, (256, 160), interpolation=cv2.INTER_LINEAR)
-    print('arr', arr.shape)
-    arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-    print('arr after', arr.shape)
-
-    images = arr[np.newaxis, :, :, :]
-    images = torch.from_numpy(images).to(device)
-    images = images.permute(0, 3, 1, 2)
-    print('images shape', images.shape, images.device)
-
-    agent.forward(observations=images)
+#     # torch_dtype = pufferlib.pytorch.nativize_dtype(puffer_env.emulated)
+#     # torch_observation = pufferlib.pytorch.nativize_tensor(flat_torch_observation, torch_dtype)
+        
+#     # agent.forward(observations=return_dict)

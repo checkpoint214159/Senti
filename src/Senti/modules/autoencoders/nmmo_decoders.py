@@ -5,11 +5,13 @@ import pufferlib
 import pufferlib.emulation
 import pufferlib.models
 import torch
-from torch import nn
 import torch.nn.functional as F
 from nmmo.entity.entity import EntityState
+from torch import nn
 
-from Senti.registry import ENCODERS
+from Senti.registry import DECODERS
+
+from .nmmo_encoders import ResnetBlock
 
 EntityId = EntityState.State.attr_name_to_col["id"]
 
@@ -18,26 +20,27 @@ def orthogonal_init(layer, gain=1.0):
     torch.nn.init.constant_(layer.bias, 0)
 
 
-@ENCODERS.register_module()
-class NmmoEncoders(nn.Module):  # TODO: change Policy from pufferlib for now?
-    def __init__(self,
-            input_size=256, hidden_size=256, task_size=2048,):
+@DECODERS.register_module()
+class NmmoDecoders(nn.Module):  # TODO: change Policy from pufferlib for now?
+    def __init__(self, input_size=256, hidden_size=256, task_size=2048):
         super().__init__()
 
-        self.tile_encoder = TileEncoder(input_size)
-        self.player_encoder = PlayerEncoder(input_size, hidden_size)
-        self.item_encoder = ItemEncoder(input_size, hidden_size)
-        self.inventory_encoder = InventoryEncoder(input_size, hidden_size)
-        self.market_encoder = MarketEncoder(input_size, hidden_size)
-        # self.task_encoder = TaskEncoder(input_size, hidden_size, task_size)
-        # self.proj_fc = torch.nn.Linear(5 * input_size, hidden_size)
-        self.proj_fc = torch.nn.Linear(4 * input_size, hidden_size)  # previously hardcoded to 5
-        # because we take in the task encoded into input_size. TODO make this more flex
+        self.tile_encoder = TileDecoder(input_size)
+        self.player_encoder = PlayerDecoder(input_size, hidden_size)
+        self.item_encoder = ItemDecoder(input_size, hidden_size)
+        self.inventory_encoder = InventoryDecoder(input_size, hidden_size)
+        self.market_encoder = MarketDecoder(input_size, hidden_size)
+        self.task_encoder = TaskDecoder(input_size, hidden_size, task_size)
+        self.proj_fc = torch.nn.Linear(5 * input_size, hidden_size)
         self.value_head = torch.nn.Linear(hidden_size, 1)
         orthogonal_init(self.proj_fc)
         orthogonal_init(self.value_head)
 
     def forward(self, env_outputs: dict):
+        # TODO: temporarily dont have this here?
+        # env_outputs = pufferlib.emulation.unpack_batched_obs(
+        #     flat_observations, self.unflatten_context
+        # )
         tile = self.tile_encoder(env_outputs["Tile"])
         player_embeddings, my_agent = self.player_encoder(
             env_outputs["Entity"], env_outputs["AgentId"][:, 0]
@@ -49,13 +52,13 @@ class NmmoEncoders(nn.Module):  # TODO: change Policy from pufferlib for now?
         market_embeddings = self.item_encoder(env_outputs["Market"])
         market = self.market_encoder(market_embeddings)
 
-        # task = self.task_encoder(env_outputs["Task"])
+        task = self.task_encoder(env_outputs["Task"])
 
-        # obs = torch.cat([tile, my_agent, inventory, market, task], dim=-1)
-        obs = torch.cat([tile, my_agent, inventory, market], dim=-1)
+        obs = torch.cat([tile, my_agent, inventory, market, task], dim=-1)
         print('obs shape in encoder_observations???', obs.shape)
         obs = F.relu(self.proj_fc(obs))
         print('after fc and relu???', obs.shape)
+
         return obs, (
             player_embeddings,
             item_embeddings,
@@ -64,55 +67,41 @@ class NmmoEncoders(nn.Module):  # TODO: change Policy from pufferlib for now?
         )
 
 
-class ResnetBlock(torch.nn.Module):
-    def __init__(self, in_planes, img_size=(15, 15)):
-        super().__init__()
-        self.model = torch.nn.Sequential(
-            torch.nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1),
-            torch.nn.LayerNorm((in_planes, *img_size)),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1),
-            torch.nn.LayerNorm((in_planes, *img_size)),
-        )
-
-    def forward(self, x):
-        out = self.model(x)
-        out += x
-        return out
-
-
-class TileEncoder(torch.nn.Module):
+class TileDecoder(torch.nn.Module):
     def __init__(self, input_size):
         super().__init__()
         self.type_embedding = torch.nn.Embedding(16, 62)  # hardcode to 16 types for now?
         # 62 concat with 2 gives us 64, which we pump into tile_resnet
 
         self.tile_resnet = ResnetBlock(64)
-        self.tile_conv_1 = torch.nn.Conv2d(64, 32, 3)
-        self.tile_conv_2 = torch.nn.Conv2d(32, 8, 3)
-        self.tile_fc = torch.nn.Linear(8 * 11 * 11, input_size)
+        self.tile_conv_1 = torch.nn.Conv2d(8, 32, 3)
+        self.tile_conv_2 = torch.nn.Conv2d(32, 64, 3)
+        self.tile_fc = torch.nn.Linear(input_size, 8 * 11 * 11)
         self.tile_norm = torch.nn.LayerNorm(input_size)
         orthogonal_init(self.tile_fc)
 
-    def forward(self, tile):
+    def forward(self, latent):
+        latent = F.relu(
+            self.tile_norm(self.tile_fc(latent))).contiguous().view(-1, 8 * 11 * 11)
+        latent = F.relu(self.tile_conv_1(latent))
+        latent = F.relu(self.tile_conv_2(latent))
+        latent = F.relu(self.tile_resnet(latent))
+
+        return latent
+
+        raise NotImplementedError()
         tile_position = tile[:, :, :2] / 128 - 0.5
         tile_type = tile[:, :, 2].long().clip(0, 15)
         tile = torch.cat((tile_position, self.type_embedding(tile_type)), dim=-1)
         agents, _, features = tile.shape
-        # print('tile.shape, agents is first', tile.shape)
         tile = tile.transpose(1, 2).view(agents, features, 15, 15).float()
-        
-        latent = F.relu(self.tile_resnet(tile))
-        # print('self.tile_resnet(tile)', latent.shape)
-        latent = F.relu(self.tile_conv_1(latent))
-        # print('conv1', latent.shape)
-        latent = F.relu(self.tile_conv_2(latent))
-        # print('conv2', latent.shape)
-        latent = latent.contiguous().view(agents, -1)
-        # print('configuous view reshape', latent.shape)
-        latent = F.relu(self.tile_norm(self.tile_fc(latent)))
-        # print('fc and norm', latent.shape)
-        return latent
+
+        tile = F.relu(self.tile_resnet(tile))
+        tile = F.relu(self.tile_conv_1(tile))
+        tile = F.relu(self.tile_conv_2(tile))
+        tile = tile.contiguous().view(agents, -1)
+        tile = F.relu(self.tile_norm(self.tile_fc(tile)))
+        return tile
 
 
 class MLPBlock(torch.nn.Module):
@@ -135,7 +124,7 @@ class MLPBlock(torch.nn.Module):
         return out
 
 
-class PlayerEncoder(torch.nn.Module):
+class PlayerDecoder(torch.nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
         self.entity_dim = 31  # once again hardcoded for now
@@ -184,7 +173,7 @@ class PlayerEncoder(torch.nn.Module):
         return agent_embeddings, my_agent_embeddings
 
 
-class ItemEncoder(torch.nn.Module):
+class ItemDecoder(torch.nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
         self.embedding = torch.nn.Embedding(256, 32)
@@ -229,7 +218,7 @@ class ItemEncoder(torch.nn.Module):
         return item_embeddings
 
 
-class InventoryEncoder(torch.nn.Module):
+class InventoryDecoder(torch.nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
         self.fc = torch.nn.Linear(12 * hidden_size, input_size)
@@ -242,7 +231,7 @@ class InventoryEncoder(torch.nn.Module):
         return F.relu(self.norm(self.fc(inventory)))
 
 
-class MarketEncoder(torch.nn.Module):
+class MarketDecoder(torch.nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
         self.fc = torch.nn.Linear(hidden_size, input_size)
@@ -253,7 +242,7 @@ class MarketEncoder(torch.nn.Module):
         return F.relu(self.norm(self.fc(market).mean(-2)))
 
 
-class TaskEncoder(torch.nn.Module):
+class TaskDecoder(torch.nn.Module):
     def __init__(self, input_size, hidden_size, task_size):
         super().__init__()
         self.fc = torch.nn.Linear(task_size, input_size)

@@ -8,10 +8,21 @@ import torch.nn as nn
 class BaseState(nn.Module, ABC):
     """
     mother of all state. all hail base state.
+
+    It is useful to have a State class as a layer of abstraction, as state itself should be capable
+    of flexibly designed, without having the user carefully unpack the data within
+    for use.
     """
 
     def __init__(self):
         super().__init__()
+
+    @classmethod
+    def assert_type(cls, other):
+        assert isinstance(other, cls), (
+            f"{cls.__name__}: Assertion failed. Expected {cls.__name__}, "
+            f"got {type(other).__name__}"
+        )
 
     def clone(self, detach=False, freeze=False):
         """
@@ -26,8 +37,7 @@ class BaseState(nn.Module, ABC):
             if detach:
                 new_param = new_param.detach()
             new_param.requires_grad_(not freeze)
-
-            setattr(new_node, name, new_param)
+            self._set_nested_attr(new_node, name, nn.Parameter(new_param))
 
         return new_node
     
@@ -52,3 +62,27 @@ class BaseState(nn.Module, ABC):
     def log_prob(self, x):
         """For probabilistic states."""
         raise NotImplementedError(f"{type(self)} does not implement log_prob().")
+    
+    def compute_energy(self, other, loss_func):
+        """
+        for computing energy. the other three arguments are placeholder
+        """
+        raise NotImplementedError(f"{type(self)} does not implement compute_energy().")
+    
+    @abstractmethod
+    def raw(self):
+        """
+        entirely for describing the self as some kind of 'raw' datatype.
+        the semantics of what is raw depends on the class, hence the requirement.
+        however, it can be useful to think of it as some 'default' datatype or form of the data within
+        """
+        ...
+
+    @staticmethod
+    def _set_nested_attr(root: nn.Module, name: str, value):
+        """Set an attribute on a nested module path like 'a.b.c'."""
+        parts = name.split(".")
+        obj = root
+        for p in parts[:-1]:
+            obj = getattr(obj, p)
+        setattr(obj, parts[-1], value)

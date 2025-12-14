@@ -28,20 +28,21 @@ class TimestepMixin:
     def get_timesteps(self, timesteps: list) -> list[BaseState]:
         return [self.get(t) for t in timesteps]
 
-    def get_all_h_states(self):
-        # TODO trash function generalize it to not use get_h_states.
-        depthwise_all_s = defaultdict(list)
-        depthwise_stacked_result = {}
+    # def get_all_h_states(self):
+    #     # TODO trash function generalize it to not use get_h_states.
+    #     depthwise_all_s = defaultdict(list)
+    #     depthwise_stacked_result = {}
 
-        for s in self.values():
-            for depth, s_tuple in enumerate(s.get_h_states()):
-                depthwise_all_s[depth].append(s_tuple)
+    #     for s in self.values():
+    #         for depth, s_tuple in enumerate(s.get_h_states()):
+    #             depthwise_all_s[depth].append(s_tuple)
 
-        for depth, s_tuples in depthwise_all_s.items():
-            length_of_tuple = len(s_tuples[0])
-            depthwise_stacked_result[depth] = tuple(
-                [torch.concat([s_tuple[i] for s_tuple in s_tuples])
-                 for i in range(length_of_tuple)]
-            )
+    #     for depth, s_tuples in depthwise_all_s.items():
+    #         length_of_tuple = len(s_tuples[0])
+    #         depthwise_stacked_result[depth] = tuple(
+    #             [torch.concat([s_tuple[i] for s_tuple in s_tuples])
+    #              for i in range(length_of_tuple)]
+    #         )
 
-        return depthwise_stacked_result
+    #     return depthwise_stacked_result
+

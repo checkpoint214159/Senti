@@ -21,6 +21,7 @@ class WorldModel(nn.Module):
             Uses n_recurrence_layers to determine number of consecututive LSTMs
         transformer         - Dense transformer
     :param init_norm_kwargs: kwargs for all FanInInitReLULayers.
+    
     """
 
     def __init__(
@@ -30,7 +31,6 @@ class WorldModel(nn.Module):
         # impala_chans=(16, 32, 32),
         # obs_processing_width=256,
         hidsize=512,
-        single_output=False,  # True if we don't need separate outputs for action/value outputs
         # img_shape=None,
         # scale_input_img=True,
         # only_img_input=False,
@@ -52,15 +52,8 @@ class WorldModel(nn.Module):
         recurrence_is_residual=True,
         timesteps=128,
         use_pre_lstm_ln=True,  # Not needed for transformer
-        # **unused_kwargs,
+        **unused_kwargs,
     ):
-        """
-        Hacked OpenAI VPT model for its hierarchical structure
-        and potentially good off-the-shelf foundational model perf.
-
-        Also doesn't rely on actions, which is good for our world model?
-        TODO: DOC STRING TS
-        """
         super().__init__()
         assert recurrence_type in [
             "multi_layer_lstm",
@@ -71,8 +64,6 @@ class WorldModel(nn.Module):
         ]
 
         active_reward_monitors = active_reward_monitors or {}
-
-        self.single_output = single_output
 
         # chans = tuple(int(impala_width * c) for c in impala_chans)
         self.hidsize = hidsize
@@ -120,7 +111,7 @@ class WorldModel(nn.Module):
             attention_memory_size=attention_memory_size,
             n_block=n_recurrence_layers,
         )
-
+        self.depth = n_recurrence_layers
         self.lastlayer = FanInInitReLULayer(hidsize, hidsize, layer_type="linear", **self.dense_init_norm_kwargs)
         self.final_ln = torch.nn.LayerNorm(hidsize)
 
@@ -129,7 +120,13 @@ class WorldModel(nn.Module):
     def output_latent_size(self):
         return self.hidsize
 
-    def forward(self, x, state_mask, xf_state, context):
+    def forward(
+        self,
+        x:torch.Tensor,
+        state_mask: list,
+        h,
+        context
+    ):
         """
         Runs forward for WorldModel. Takes in previous state and current observation.
         """
@@ -138,16 +135,13 @@ class WorldModel(nn.Module):
             x = self.pre_lstm_ln(x)
 
         if self.recurrent_layer is not None:
-            x, state_mask, xf_state = self.recurrent_layer(x, first, state_mask, xf_state)
+            latent, state_mask, h = self.recurrent_layer(x, first, state_mask, h)
 
-        x = F.relu(x, inplace=False)
+        latent = F.relu(latent, inplace=False)
 
-        x = self.lastlayer(x)
-        x = self.final_ln(x)
-        pi_latent = vf_latent = x
-        if self.single_output:
-            return pi_latent, state_mask, xf_state
-        return (pi_latent, vf_latent), state_mask, xf_state
+        latent = self.lastlayer(latent)
+        latent = self.final_ln(latent)
+        return latent, state_mask, h
 
     def initial_state(self, batch_size):
         if self.recurrent_layer:

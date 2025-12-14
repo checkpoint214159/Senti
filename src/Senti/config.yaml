@@ -2,27 +2,64 @@
 # we will populate the agent body config with this
 
 agent:
-  z_dim: 8
-  h_dim: 8
-  state_depth: 1
   history: 3
+  h_dim: 8
+  z_dim: 8
+  a_dim: 8
+  state_depth: 3
   device: cuda
-  batch: 128
+  batch_size: 128
+  timestep_size: 2
 
-nmmo_encoder:
-  name: NmmoEncoders
-  input_size: 8
-  hidden_size: ${agent.z_dim}
-  device: ${agent.device}
+  nmmo_obs_encoder:
+    name: NmmoEncoders
+    intermediate: 32
+    hidden_size: ${agent.z_dim}
+    device: ${agent.device}
 
-nmmo_decoder:
-  hidden_size: ${agent.z_dim}
+  nmmo_obs_decoder:
+    name: NmmoDecoders
+    intermediate: 32
+    hidden_size: ${agent.z_dim}
+    device: ${agent.device}
 
-worldmodel:
+  NmmoObsAE:
+    encoder: ${agent.nmmo_obs_encoder}
+    decoder: ${agent.nmmo_obs_decoder}
 
-nmmo_ae:
-  encoder: ${nmmo_encoder}
-  decoder: ${nmmo_decoder}
+  zAE:
+    obs_hid_size: ${agent.nmmo_obs_encoder.hidden_size}
+    z_dim: ${agent.z_dim}
+
+  latent_az_encoder:
+    az_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
+
+  latent_az_decoder:
+    az_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
+
+  transition_model:
+    latent_az_encoder: ${agent.latent_az_encoder}
+    latent_az_decoder: ${agent.latent_az_decoder}
+    recurrence_type: transformer
+    attention_memory_size: ${eval:"2 * ${agent.timestep_size}"}
+    hidsize: ${agent.h_dim}
+    n_recurrence_layers: ${agent.state_depth}
+    timesteps: ${agent.timestep_size}
+    batch_size: ${agent.batch_size}
+    device: ${agent.device}
+
+  grounding_wm:
+    latent_az_encoder: ${agent.latent_az_encoder}
+    latent_az_decoder: ${agent.latent_az_decoder}
+    recurrence_type: transformer
+    attention_memory_size: ${eval:"${agent.history} + ${agent.timestep_size}"}
+    hidsize: ${agent.h_dim}
+    n_recurrence_layers: ${agent.state_depth}
+    timesteps: ${agent.timestep_size}
+    batch_size: ${agent.batch_size}
+    device: ${agent.device}
+
+
   
 
 env:

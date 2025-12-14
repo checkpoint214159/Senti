@@ -22,16 +22,16 @@ def orthogonal_init(layer, gain=1.0):
 
 @DECODERS.register_module()
 class NmmoDecoders(nn.Module):  # TODO: change Policy from pufferlib for now?
-    def __init__(self, input_size=256, hidden_size=256, task_size=2048):
+    def __init__(self, intermediate=256, hidden_size=256, task_size=2048):
         super().__init__()
 
-        self.tile_encoder = TileDecoder(input_size)
-        self.player_encoder = PlayerDecoder(input_size, hidden_size)
-        self.item_encoder = ItemDecoder(input_size, hidden_size)
-        self.inventory_encoder = InventoryDecoder(input_size, hidden_size)
-        self.market_encoder = MarketDecoder(input_size, hidden_size)
-        self.task_encoder = TaskDecoder(input_size, hidden_size, task_size)
-        self.proj_fc = torch.nn.Linear(5 * input_size, hidden_size)
+        self.tile_encoder = TileDecoder(intermediate)
+        self.player_encoder = PlayerDecoder(intermediate, hidden_size)
+        self.item_encoder = ItemDecoder(intermediate, hidden_size)
+        self.inventory_encoder = InventoryDecoder(intermediate, hidden_size)
+        self.market_encoder = MarketDecoder(intermediate, hidden_size)
+        self.task_encoder = TaskDecoder(intermediate, hidden_size, task_size)
+        self.proj_fc = torch.nn.Linear(5 * intermediate, hidden_size)
         self.value_head = torch.nn.Linear(hidden_size, 1)
         orthogonal_init(self.proj_fc)
         orthogonal_init(self.value_head)
@@ -68,7 +68,7 @@ class NmmoDecoders(nn.Module):  # TODO: change Policy from pufferlib for now?
 
 
 class TileDecoder(torch.nn.Module):
-    def __init__(self, input_size):
+    def __init__(self, intermediate):
         super().__init__()
         self.type_embedding = torch.nn.Embedding(16, 62)  # hardcode to 16 types for now?
         # 62 concat with 2 gives us 64, which we pump into tile_resnet
@@ -76,8 +76,8 @@ class TileDecoder(torch.nn.Module):
         self.tile_resnet = ResnetBlock(64)
         self.tile_conv_1 = torch.nn.Conv2d(8, 32, 3)
         self.tile_conv_2 = torch.nn.Conv2d(32, 64, 3)
-        self.tile_fc = torch.nn.Linear(input_size, 8 * 11 * 11)
-        self.tile_norm = torch.nn.LayerNorm(input_size)
+        self.tile_fc = torch.nn.Linear(intermediate, 8 * 11 * 11)
+        self.tile_norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.tile_fc)
 
     def forward(self, latent):
@@ -105,10 +105,10 @@ class TileDecoder(torch.nn.Module):
 
 
 class MLPBlock(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_layers=2):
+    def __init__(self, intermediate, hidden_size, output_size, num_layers=2):
         super().__init__()
         self.model = [
-            torch.nn.Linear(input_size, hidden_size),
+            torch.nn.Linear(intermediate, hidden_size),
             torch.nn.ReLU(),
         ]
         for _ in range(num_layers - 2):
@@ -125,7 +125,7 @@ class MLPBlock(torch.nn.Module):
 
 
 class PlayerDecoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
         self.entity_dim = 31  # once again hardcoded for now
         self.player_offset = torch.tensor([i * 256 for i in range(self.entity_dim)])
@@ -143,7 +143,7 @@ class PlayerDecoder(torch.nn.Module):
 
         self.agent_mlp = MLPBlock(64 + self.entity_dim - 3, hidden_size, hidden_size)
         self.agent_fc = torch.nn.Linear(hidden_size, hidden_size)
-        self.my_agent_fc = torch.nn.Linear(hidden_size, input_size)
+        self.my_agent_fc = torch.nn.Linear(hidden_size, intermediate)
         self.agent_norm = torch.nn.LayerNorm(hidden_size)
         self.my_agent_norm = torch.nn.LayerNorm(hidden_size)
         orthogonal_init(self.agent_fc)
@@ -174,7 +174,7 @@ class PlayerDecoder(torch.nn.Module):
 
 
 class ItemDecoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
         self.embedding = torch.nn.Embedding(256, 32)
         self.item_mlp = MLPBlock(2 * 32 + 12, hidden_size, hidden_size)
@@ -219,10 +219,10 @@ class ItemDecoder(torch.nn.Module):
 
 
 class InventoryDecoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
-        self.fc = torch.nn.Linear(12 * hidden_size, input_size)
-        self.norm = torch.nn.LayerNorm(input_size)
+        self.fc = torch.nn.Linear(12 * hidden_size, intermediate)
+        self.norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.fc)
 
     def forward(self, inventory):
@@ -232,10 +232,10 @@ class InventoryDecoder(torch.nn.Module):
 
 
 class MarketDecoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
-        self.fc = torch.nn.Linear(hidden_size, input_size)
-        self.norm = torch.nn.LayerNorm(input_size)
+        self.fc = torch.nn.Linear(hidden_size, intermediate)
+        self.norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.fc)
 
     def forward(self, market):
@@ -243,10 +243,10 @@ class MarketDecoder(torch.nn.Module):
 
 
 class TaskDecoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, task_size):
+    def __init__(self, intermediate, hidden_size, task_size):
         super().__init__()
-        self.fc = torch.nn.Linear(task_size, input_size)
-        self.norm = torch.nn.LayerNorm(input_size)
+        self.fc = torch.nn.Linear(task_size, intermediate)
+        self.norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.fc)
 
     def forward(self, task):

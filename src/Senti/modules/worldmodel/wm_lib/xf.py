@@ -47,7 +47,10 @@ def attention(
         bias = get_attn_bias_cached(Q_bte.shape[1], K_bTe.shape[1], maxlen=maxlen, device=Q_bte.device, dtype=th.float32)
     else:
         bias = Q_bte.new_zeros((), dtype=th.float32)
+
     if extra_btT is not None:
+        print('bias shape?', bias.shape)
+        print('extra_btT shape?', extra_btT.shape)
         bias = bias + extra_btT
     # Equivalent to bias + (1 / math.sqrt(e)) * th.einsum("bte,bpe->btp", Q_bte, K_bte)
     # but faster:
@@ -261,7 +264,13 @@ class AttentionLayerBase(nn.Module):
         self.maxlen = maxlen
         self.dtype = dtype
 
-    def relattn_logits(self, X_bte, T):
+    def relative_attn_logits(self, X_bte, T):
+        """
+        Relative Attention modifies the standard attention logit (the thing associating query and key together)
+        by adding a position-dependent bias to the logit. This allows the model to learn that attending to the 
+        immediately preceding token (distance -1) is fundamentally different from attending to a token 
+        five positions away (distance -5), regardless of the content of the token
+        """
         R_btn = self.r_layer(X_bte).float()
         R_btn = self.attn.preproc_r(R_btn)
         t = R_btn.shape[1]
@@ -338,7 +347,8 @@ class SelfAttentionLayer(AttentionLayerBase):
         if state:
             state, K_bte, V_bte = self.update_state(state, K_bte, V_bte)
         postproc_closure, Q_bte, K_bte, V_bte = self.attn.preproc_qkv(Q_bte, K_bte, V_bte)
-        extra_btT = self.relattn_logits(X_bte, K_bte.shape[1]) if self.relattn else None
+        extra_btT = self.relative_attn_logits(X_bte, K_bte.shape[1]) if self.relattn else None
+        
         A_bte = attention(
             Q_bte,
             K_bte,
@@ -363,6 +373,16 @@ class SelfAttentionLayer(AttentionLayerBase):
         return out_bte
 
     def update_state(self, state, K_bte, V_bte):
+        """
+        updates state variable, to include K and V values, whilst adhereing to cache_keep_len.
+        
+        Args:
+        K_bte and V_bte: the incoming elements
+
+        Returns:
+        outstate: (outstate_K, outstate_V) which are the returns of append function
+        K_bte and V_bte: the values meant to be used for self attention, <=cache_keep_len
+        """
         def append(prev, new):
             """
             Given `prev` keys from cache, and `new` keys,

@@ -1,9 +1,12 @@
 import copy
 from abc import abstractmethod
+from typing import Generic, Iterable, List, Type, TypeVar
 
 import torch
-from base import BaseState
 from torch import nn
+
+from Senti.modules.dataclasses.base import BaseState
+from Senti.modules.optim.base import BaseLoss
 
 
 def dim_or_value_init(
@@ -25,9 +28,13 @@ def dim_or_value_init(
 
 class BaseNormal(BaseState):
     """
-    implementors to provide:
-      - mean (Tensor)
-      - log_std or std (Tensor)
+    this is a dataclass for normal distributions.
+    however for easy of passing the data into various models, we provide
+    ways to extract the data into a flattened form, get the mean, get log_std,
+    concat with others, etc etc.
+    In short the main idea here was to treat this object like a nn.Module, with some
+    of the functionality like concat
+    TODO im starting to feel like this is an overly complicated wrapper
     """
     def __init__(self):
         super().__init__()
@@ -48,17 +55,22 @@ class BaseNormal(BaseState):
     def std(self):
         return torch.exp(self.log_std)
 
+    @property
     def as_distribution(self):
         return torch.distributions.Normal(self.mean, self.std)
 
     def sample(self, n=None):
-        dist = self.as_distribution()
+        dist = self.as_distribution
         if n is None:
             return dist.rsample()
         return dist.rsample((n,))
 
     def log_prob(self, x):
-        return self.as_distribution().log_prob(x)
+        return self.as_distribution.log_prob(x)
+
+    @abstractmethod
+    def concat(self, other, dim) -> "BaseNormal":
+        ...
 
 
 class Normal(BaseNormal):
@@ -86,11 +98,11 @@ class Normal(BaseNormal):
             init_value=0)
         self.z_mean = nn.Parameter(z_init)
 
-        z_log_std_init = dim_or_value_init(
+        z_log_std = dim_or_value_init(
             z_log_std,
             z_log_std_shape,
             init_value=log_std_init)
-        self.z_log_std = nn.Parameter(z_log_std_init)
+        self.z_log_std = nn.Parameter(z_log_std)
 
         assert self.z_mean.shape == self.z_log_std.shape, \
             f'{cls}: Assertion failed. z_mean and z_log_std have mismatching shapes: \n' \
@@ -98,12 +110,16 @@ class Normal(BaseNormal):
             f'z_log_std shape: {self.z_log_std.shape}'
         
     @classmethod
-    def from_shape(cls, shape, init_log_std=1):
-        return cls(z_mean_shape=shape, z_log_std_shape=shape, log_std_init=init_log_std)
+    def from_shape(cls, shape, log_std_init=1):
+        return cls(z_mean_shape=shape, z_log_std_shape=shape, log_std_init=log_std_init)
 
     @classmethod
-    def from_value(cls, mean, log_std=None):
-        return cls(z_mean=mean, z_log_std=log_std)
+    def from_value(cls, mean, log_std=None, log_std_init=1):
+        if log_std is None:
+            return cls(z_mean=mean,
+                z_log_std_shape=mean.shape, log_std_init=log_std_init)
+        return cls(z_mean=mean,
+                z_log_std=log_std, log_std_init=log_std_init)
 
     @property
     def mean(self):
@@ -112,6 +128,190 @@ class Normal(BaseNormal):
     @property
     def log_std(self):
         return self.z_log_std
+    
+    @property
+    def shape(self):
+        return self.z_mean.shape
+    
+    @property
+    def dim(self):
+        return self.z_mean.ndim
+    
+    def compute_energy(self, other, loss_func):
+        """
+        for computing energy. the other three arguments are placeholder.
+        we assume loss_func accepts two distributions as arguments. if they dont,
+        loss_func will error out anyways.
+        """
+        return loss_func(self, other)
+
+    @classmethod
+    def concat(cls, normals:list["Normal"], dim:int) -> "Normal":
+        assert isinstance(normals, list)
+        [cls.assert_type(o) for o in normals]
+        return Normal(
+            z_mean=torch.concat([n.mean for n in normals], dim),
+            z_log_std=torch.concat([n.log_std for n in normals], dim),
+        )  # let torch return errors here
+    
+    @classmethod
+    def stack(cls, normals:list["Normal"], dim:int) -> "Normal":
+        assert isinstance(normals, list)
+        [cls.assert_type(o) for o in normals]
+        return Normal(
+            z_mean=torch.stack([n.mean for n in normals], dim),
+            z_log_std=torch.stack([n.log_std for n in normals], dim),
+        )  # let torch return errors here
+    
+    def repeat(self, shape:Iterable[int]) -> "Normal":
+        return Normal(
+            z_mean=self.mean.repeat(shape),
+            z_log_std=self.log_std.repeat(shape),
+        )  # let torch return errors here
+    
+    def unsqueeze(self, dim:int) -> "Normal":
+        return Normal(
+            z_mean=self.mean.unsqueeze(dim),
+            z_log_std=self.log_std.unsqueeze(dim),
+        )  # let torch return errors here
+    
+    def raw(self):
+        """
+        its raw type is simply a tuple of mean and log_std. not very useful.
+        """
+        return self.mean, self.log_std
+    
+    def map(self, func) -> "Normal":
+        return Normal(
+            z_mean=func(self.mean),
+            z_log_std=func(self.log_std),
+        )
+
+
+T = TypeVar("T", bound="BaseNormal")
+
+class DepthNormal(Generic[T], BaseNormal):
+    def __init__(
+        self,
+        depth: int,
+        values: List[T],
+        stateclass: Type[T],
+    ):
+        """
+        the intent for this class, is for each value to have the same shape
+        we will assert that each value's shape is equivalent.
+        that way we can perform useful operations with that assumption (like getting mean, std, etc)
+
+        depth: extra arg to sanity check
+        values: list of values, depth length, of T
+        stateclass: T extends BaseState
+        of course python isnt strictly typed, but if you are reading this
+        you cant blame me for not trying to be clear
+        """
+        super().__init__()
+        cls = self.__class__.__name__
+        assert len(values) == depth, f"{cls}: Assertion failed. Passed in list of values not equal to" \
+            f"depth. Depth is {depth} len values is {len(values)}"
+        assert len(set([v.shape for v in values])) == 1, f"{cls}: Assertion failed. Passed in list of values of unequal shape" \
+            f"{[v.shape for v in values]}"
+        
+        #TODO write assertion to check values are of same shape here!
+        self.depth = depth
+        self.values = values
+        self.stateclass = stateclass
+
+    def clone(self, detach=False, freeze=False) -> "DepthNormal":
+        new_node = copy.deepcopy(self)
+        new_node.values = [v.clone(detach, freeze) for v in self.values]
+
+        return new_node
+    
+    @property
+    def mean(self):
+        """calls for each element in its values, and concats them all."""
+        return torch.concat(
+            [v.mean for v in self.values],
+            dim=0)
+    
+    @property
+    def log_std(self):
+        """calls for each element in its values, and concats them all."""
+        return torch.concat(
+            [v.log_std for v in self.values],
+            dim=0)
+    
+    @property
+    def shape(self):
+        return self.values[0].shape
+    
+    @property
+    def dim(self):
+        return self.values[0].dim
+    
+    def compute_energy(self, other, loss_func):
+        """
+        calls loss_func for each. TODO see if we force loss_func to be addable?
+        """
+        self.assert_type(other)
+        assert self.depth == other.depth, 'DepthNormal: Assertion failed. Passed in DepthNormal not equal to depth of self'
+        stack = torch.stack(
+            [self.values[d].compute_energy(other.values[d], loss_func) for d in range(self.depth)])
+        return torch.sum(stack, dim=0)
+
+    @classmethod
+    def concat(cls, dns:list["DepthNormal"], dim:int) -> "DepthNormal":
+        assert isinstance(dns, list)
+        [cls.assert_type(dn) for dn in dns]
+        assert len(set([o.depth for o in dns])) == 1, 'DepthNormal: Assertion failed. Passed in list of DepthNormals with unequal depth' \
+            'unable to concatenate'
+        first_dn = dns[0]
+        depth = first_dn.depth
+        return DepthNormal(
+            depth=depth,
+            values=[__class__(first_dn[d]).concat([dns], dim) for d in range(depth)],
+            stateclass=first_dn.stateclass,
+        )
+    
+    @classmethod
+    def stack(cls, dns:list["DepthNormal"], dim:int) -> "DepthNormal":
+        assert isinstance(dns, list)
+        [cls.assert_type(dn) for dn in dns]
+        assert len(set([o.depth for o in dns])) == 1, 'DepthNormal: Assertion failed. Passed in list of DepthNormals with unequal depth' \
+            'unable to concatenate'
+        first_dn = dns[0]
+        depth = first_dn.depth
+        return DepthNormal(
+            depth=depth,
+            values=[__class__(first_dn[d]).stack([dns], dim) for d in range(depth)],
+            stateclass=first_dn.stateclass,
+        )
+    
+    def repeat(self, shape:Iterable[int]) -> "DepthNormal":
+        return DepthNormal(
+            depth=self.depth,
+            values=[self.values[d].repeat(shape) for d in range(self.depth)],
+            stateclass=self.stateclass,
+        )
+    
+    def unsqueeze(self, dim:int) -> "DepthNormal":
+        return DepthNormal(
+            depth=self.depth,
+            values=[self.values[d].unsqueeze(dim) for d in range(self.depth)],
+            stateclass=self.stateclass,
+        )
+    
+    def raw(self):
+        """
+        simply list of raws of values
+        """
+        return [v.raw() for v in self.values]
+    
+    def map(self, func) -> "DepthNormal":
+        return DepthNormal(
+            depth=self.depth,
+            values=[func(self.values[d]) for d in range(self.depth)],
+            stateclass=self.stateclass,
+        )
 
 if __name__ == "__main__":
     # simple test

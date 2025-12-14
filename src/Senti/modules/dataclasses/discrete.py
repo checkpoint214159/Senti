@@ -1,7 +1,8 @@
 from abc import abstractmethod
 
 import torch
-from base import BaseState
+
+from Senti.modules.dataclasses.base import BaseState
 
 
 class BaseDiscrete(BaseState):

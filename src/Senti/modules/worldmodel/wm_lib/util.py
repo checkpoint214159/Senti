@@ -149,6 +149,7 @@ class ResidualRecurrentBlocks(nn.Module):
         assert len(state_masks) == len(
             self.blocks
         ), f"Length of state {len(state_masks)} did not match length of blocks {len(self.blocks)}"
+
         assert len(state_masks) == len(xf_states), 'Assertion failed, length of masks and states must be equal.'
         for idx, (block, state_mask_in, xf_state_in) in enumerate(zip(self.blocks, state_masks, xf_states)):
             x, state_mask_out, xf_state_out = block(x, first, state_mask_in, xf_state_in)

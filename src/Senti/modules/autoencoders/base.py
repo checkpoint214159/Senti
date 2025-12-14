@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 
+import torch
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.registry import AUTOENCODERS
+from Senti.registry import AUTOENCODERS, DECODERS, ENCODERS
 
 
 @AUTOENCODERS.register_module()
@@ -14,22 +15,23 @@ class BaseAutoEncoder(ABC, nn.Module):
     so this way we can further modularize each thing seperately and users can init those on their own
     instead if they so choose.
 
-    Everything is left to definition, since a user should define their own autoencoder
-    to pluck specific things from the config
+    provided some default utilities of using name and device, but this isnt strict
     """
 
     @staticmethod
-    @abstractmethod
     def init_encoder(encoder_config: DictConfig | None) -> nn.Module | None:
-        raise NotImplementedError()
+        name = encoder_config.pop("name")
+        device = encoder_config.pop("device")
+        return ENCODERS.build(name, **encoder_config).to(torch.device(device))
 
     @staticmethod
-    @abstractmethod
     def init_decoder(decoder_config: DictConfig | None) -> nn.Module | None:
-        raise NotImplementedError()
+        name = decoder_config.pop("name")
+        device = decoder_config.pop("device")
+        return DECODERS.build(name, **decoder_config).to(torch.device(device))
 
     def encode(self, data):
-        return self.encoder(data)
+        raise NotImplementedError()
 
     def decode(self, data):
-        return self.decoder(data)
+        raise NotImplementedError()

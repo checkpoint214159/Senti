@@ -5,9 +5,9 @@ import pufferlib
 import pufferlib.emulation
 import pufferlib.models
 import torch
-from torch import nn
 import torch.nn.functional as F
 from nmmo.entity.entity import EntityState
+from torch import nn
 
 from Senti.registry import ENCODERS
 
@@ -21,18 +21,18 @@ def orthogonal_init(layer, gain=1.0):
 @ENCODERS.register_module()
 class NmmoEncoders(nn.Module):  # TODO: change Policy from pufferlib for now?
     def __init__(self,
-            input_size=256, hidden_size=256, task_size=2048,):
+            intermediate=256, hidden_size=256, task_size=2048,):
         super().__init__()
 
-        self.tile_encoder = TileEncoder(input_size)
-        self.player_encoder = PlayerEncoder(input_size, hidden_size)
-        self.item_encoder = ItemEncoder(input_size, hidden_size)
-        self.inventory_encoder = InventoryEncoder(input_size, hidden_size)
-        self.market_encoder = MarketEncoder(input_size, hidden_size)
-        # self.task_encoder = TaskEncoder(input_size, hidden_size, task_size)
-        # self.proj_fc = torch.nn.Linear(5 * input_size, hidden_size)
-        self.proj_fc = torch.nn.Linear(4 * input_size, hidden_size)  # previously hardcoded to 5
-        # because we take in the task encoded into input_size. TODO make this more flex
+        self.tile_encoder = TileEncoder(intermediate)
+        self.player_encoder = PlayerEncoder(intermediate, hidden_size)
+        self.item_encoder = ItemEncoder(intermediate, hidden_size)
+        self.inventory_encoder = InventoryEncoder(intermediate, hidden_size)
+        self.market_encoder = MarketEncoder(intermediate, hidden_size)
+        # self.task_encoder = TaskEncoder(intermediate, hidden_size, task_size)
+        # self.proj_fc = torch.nn.Linear(5 * intermediate, hidden_size)
+        self.proj_fc = torch.nn.Linear(4 * intermediate, hidden_size)  # previously hardcoded to 5
+        # because we take in the task encoded into intermediate. TODO make this more flex
         self.value_head = torch.nn.Linear(hidden_size, 1)
         orthogonal_init(self.proj_fc)
         orthogonal_init(self.value_head)
@@ -53,9 +53,7 @@ class NmmoEncoders(nn.Module):  # TODO: change Policy from pufferlib for now?
 
         # obs = torch.cat([tile, my_agent, inventory, market, task], dim=-1)
         obs = torch.cat([tile, my_agent, inventory, market], dim=-1)
-        print('obs shape in encoder_observations???', obs.shape)
         obs = F.relu(self.proj_fc(obs))
-        print('after fc and relu???', obs.shape)
         return obs, (
             player_embeddings,
             item_embeddings,
@@ -82,7 +80,7 @@ class ResnetBlock(torch.nn.Module):
 
 
 class TileEncoder(torch.nn.Module):
-    def __init__(self, input_size):
+    def __init__(self, intermediate):
         super().__init__()
         self.type_embedding = torch.nn.Embedding(16, 62)  # hardcode to 16 types for now?
         # 62 concat with 2 gives us 64, which we pump into tile_resnet
@@ -90,8 +88,8 @@ class TileEncoder(torch.nn.Module):
         self.tile_resnet = ResnetBlock(64)
         self.tile_conv_1 = torch.nn.Conv2d(64, 32, 3)
         self.tile_conv_2 = torch.nn.Conv2d(32, 8, 3)
-        self.tile_fc = torch.nn.Linear(8 * 11 * 11, input_size)
-        self.tile_norm = torch.nn.LayerNorm(input_size)
+        self.tile_fc = torch.nn.Linear(8 * 11 * 11, intermediate)
+        self.tile_norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.tile_fc)
 
     def forward(self, tile):
@@ -116,10 +114,10 @@ class TileEncoder(torch.nn.Module):
 
 
 class MLPBlock(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_layers=2):
+    def __init__(self, intermediate, hidden_size, output_size, num_layers=2):
         super().__init__()
         self.model = [
-            torch.nn.Linear(input_size, hidden_size),
+            torch.nn.Linear(intermediate, hidden_size),
             torch.nn.ReLU(),
         ]
         for _ in range(num_layers - 2):
@@ -136,7 +134,7 @@ class MLPBlock(torch.nn.Module):
 
 
 class PlayerEncoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
         self.entity_dim = 31  # once again hardcoded for now
         self.player_offset = torch.tensor([i * 256 for i in range(self.entity_dim)])
@@ -154,9 +152,9 @@ class PlayerEncoder(torch.nn.Module):
 
         self.agent_mlp = MLPBlock(64 + self.entity_dim - 3, hidden_size, hidden_size)
         self.agent_fc = torch.nn.Linear(hidden_size, hidden_size)
-        self.my_agent_fc = torch.nn.Linear(hidden_size, input_size)
+        self.my_agent_fc = torch.nn.Linear(hidden_size, intermediate)
         self.agent_norm = torch.nn.LayerNorm(hidden_size)
-        self.my_agent_norm = torch.nn.LayerNorm(hidden_size)
+        self.my_agent_norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.agent_fc)
         orthogonal_init(self.my_agent_fc)
 
@@ -185,7 +183,7 @@ class PlayerEncoder(torch.nn.Module):
 
 
 class ItemEncoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
         self.embedding = torch.nn.Embedding(256, 32)
         self.item_mlp = MLPBlock(2 * 32 + 12, hidden_size, hidden_size)
@@ -230,10 +228,10 @@ class ItemEncoder(torch.nn.Module):
 
 
 class InventoryEncoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
-        self.fc = torch.nn.Linear(12 * hidden_size, input_size)
-        self.norm = torch.nn.LayerNorm(input_size)
+        self.fc = torch.nn.Linear(12 * hidden_size, intermediate)
+        self.norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.fc)
 
     def forward(self, inventory):
@@ -243,10 +241,10 @@ class InventoryEncoder(torch.nn.Module):
 
 
 class MarketEncoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, intermediate, hidden_size):
         super().__init__()
-        self.fc = torch.nn.Linear(hidden_size, input_size)
-        self.norm = torch.nn.LayerNorm(input_size)
+        self.fc = torch.nn.Linear(hidden_size, intermediate)
+        self.norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.fc)
 
     def forward(self, market):
@@ -254,10 +252,10 @@ class MarketEncoder(torch.nn.Module):
 
 
 class TaskEncoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, task_size):
+    def __init__(self, intermediate, hidden_size, task_size):
         super().__init__()
-        self.fc = torch.nn.Linear(task_size, input_size)
-        self.norm = torch.nn.LayerNorm(input_size)
+        self.fc = torch.nn.Linear(task_size, intermediate)
+        self.norm = torch.nn.LayerNorm(intermediate)
         orthogonal_init(self.fc)
 
     def forward(self, task):

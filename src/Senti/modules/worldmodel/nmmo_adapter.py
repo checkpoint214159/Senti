@@ -73,12 +73,17 @@ class nmmoWmAdapter(WorldModel):
         for, is for bias creation later in the wm. dont worry about understanding this, just know that there is
         noqa if you touch this function.
         """
-        x_timesteps = x.shape[1]
-        h_timesteps = h.shape[1]
-        if x_timesteps + h_timesteps < self.attention_memory_size:
+        x_timesteps = x.shape[1] / self.timesteps
+        h_timesteps = h.shape[1] / self.timesteps
+        atomic_atm = self.attention_memory_size / self.timesteps
+        assert x_timesteps.is_integer()
+        assert h_timesteps.is_integer()
+        assert atomic_atm.is_integer()
+        x_timesteps, h_timesteps, atomic_atm = int(x_timesteps), int(h_timesteps), int(atomic_atm)
+        print("x_timesteps, h_timesteps, atomic_atm", x_timesteps, h_timesteps, atomic_atm)
+        if x_timesteps + h_timesteps < atomic_atm:
             newshape = [1] * h.dim
-            newshape[1] = self.attention_memory_size - x_timesteps
-            # TODO: not yet tested what happens if to_repeat doesnt nicely divide for h's existing timesteps
+            newshape[1] = atomic_atm - x_timesteps
             h = h.repeat(newshape)
         return h
 

@@ -58,7 +58,7 @@ agent:
     attention_memory_size: ${eval:"${agent.history_size} + ${agent.discrete_timestep}"}
     hidsize: ${agent.h_dim}
     n_recurrence_layers: ${agent.state_depth}
-    timesteps: ${agent.discrete_timestep}
+    timesteps: ${agent.atomic_timestep}
     batch_size: ${agent.batch_size}
     device: ${agent.device}
 

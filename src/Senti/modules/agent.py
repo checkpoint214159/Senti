@@ -250,7 +250,7 @@ class Agent(nn.Module):
 
     def inference(
         self,
-        max_update_steps: int = 100,
+        max_update_steps: int = 2,
         update_rounds: int = 10,
         print_statements: bool = True,
     ) -> float:
@@ -305,6 +305,7 @@ class Agent(nn.Module):
         for information as to whats really going on, see the update notes.
         """
         # format x
+        print('-----------------GROUNDING WM STEP-----------------')
         all_z_state = self.states_cache \
             .vmap(lambda s: s.get('z')) \
             .values()

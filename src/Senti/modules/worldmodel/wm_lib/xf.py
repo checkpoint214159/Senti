@@ -347,6 +347,10 @@ class SelfAttentionLayer(AttentionLayerBase):
         if state:
             state, K_bte, V_bte = self.update_state(state, K_bte, V_bte)
         postproc_closure, Q_bte, K_bte, V_bte = self.attn.preproc_qkv(Q_bte, K_bte, V_bte)
+        print('X_bte', X_bte.shape)
+        print('Q_bte', Q_bte.shape)
+        print('K_bte', K_bte.shape)
+        print('V_bte', V_bte.shape)
         extra_btT = self.relative_attn_logits(X_bte, K_bte.shape[1]) if self.relattn else None
         
         A_bte = attention(

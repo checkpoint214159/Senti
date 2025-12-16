@@ -32,10 +32,9 @@ class zAE(BaseAutoEncoder):
 
     def encode(self, data: Normal):
         # NOTE: LEARN VARIANCE BOOKMARK HERE
-        # lazily adds a new dimension here. TODO figure out if this is right or we are being bad
-        return Normal.from_value(self.z_encoder(data.mean)).unsqueeze(1)
+        return Normal.from_value(self.z_encoder(data.mean))
     
     def decode(self, data: Normal):
-        return Normal.from_value(self.z_decoder(data.mean)).unsqueeze(1)
+        return Normal.from_value(self.z_decoder(data.mean))
 
 

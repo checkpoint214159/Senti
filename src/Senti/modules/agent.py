@@ -26,7 +26,6 @@ from Senti.modules.optim.dist_loss import DistributionLosses
 from Senti.modules.optim.optimregistry import OptimRegistry
 from Senti.modules.utils.caches import Cache, StateTimestepCache, TensorCache
 from Senti.modules.utils.utils import nmmo_agent_check_config
-from Senti.modules.worldmodel.nmmo_adapter import nmmoWmAdapter
 from Senti.registry import AUTOENCODERS, WORLDMODELS
 
 OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {}))
@@ -109,8 +108,6 @@ class Agent(nn.Module):
         self.h_dim = self.config.h_dim
         self.z_dim = self.config.z_dim
         self.a_dim = self.z_dim
-        self.timestep_size = self.config.timestep_size  # TODO clarify its use. right now, timestep_size refers to the time dim
-        # of the incoming x when feeding into recurrent blocks, keeping at 1 for now
 
         # other non-model modules
         self.loss_module = DistributionLosses()
@@ -144,49 +141,62 @@ class Agent(nn.Module):
             'wm', wm_params, **kwargs
         )
 
+        self.atomic_timestep = config.atomic_timestep
+        self.discrete_step = config.discrete_step
+        self.atomic_count = 0
         self.curr_timestep = 1
         self.curr_h_timestep = lambda: self.curr_h_timestep - 1  # additional variable to help with understanding.
         # for each node of state, we store h_t and z_t+1. this semantic is for convenience passing into the
         # world models, but it also makes sense because it predicts h_t+1 and z_t+2, which we can save into
         # a statenode once more.
-        self.window = range(self.curr_timestep - self.history, self.curr_timestep)
+        self.window = range(self.atomic_timestep - self.history, self.atomic_timestep)
         self.to(self.device)
 
     def initialize_state_node(self, t: int, z: Normal):
         if t == 1:
             _, h_states = self.transition_model.initial_state()  # h_0
-
-            self.states_cache.add(t, POMDPState(
-                h=h_states,
-                z=z,
-                a=self.empty_action_init()).to(self.device),
-            )
      
         else:
             # calculate next h using previous state
             state = self.states_cache.get(t - 1)
             latent, h_states = self.transition_model(state)
 
-            self.states_cache.add(t, POMDPState(
-                h=h_states,
-                z=z,
-                a=self.empty_action_init()).to(self.device)
-            )
+        print('z and h states shape?', h_states.shape, z.shape)
+        self.states_cache.add(t, POMDPState(
+            h=h_states,
+            z=z,
+            a=self.empty_action_init()).to(self.device)
+        )
 
+    def update_latent_obs(self, timesteps:list[int], atomic_num:int):
+        """
+        TODO: assumes that the obs encoder operates on each timestep seperately, i.e it doesnt support us just
+        stacking the tensor and doing one pass through. this should change
+        """
+        obs = []
+        for t in timesteps:
+            o = self.observation_cache.get(t)
+            agent_embed_normal, others \
+                    = self.obs_autoencoder.encode(o) # TODO: clarify what is the difference between the two.
+            obs.append(agent_embed_normal)
+
+        stacked = type(obs[0]).concat_timesteps(obs)
+        print('stacked shape?', stacked.shape)
+        self.latent_observation_cache.add(
+                atomic_num, stacked.to(self.device))
+        
 
     def update_states_cache(self):
         """
         Simple helper method to update all timesteps in observation cache.
         """
-        for t in self.observation_cache.keys():
-            if not self.latent_observation_cache.has(t):
-                o = self.observation_cache.get(t)
-                agent_embed_normal, others \
-                    = self.obs_autoencoder.encode(o) # TODO: clarify what is the difference between the two.
-                z: Normal = self.z_ae.encode(agent_embed_normal)  # (all latent_obs) -> (z)
+        for t in self.latent_observation_cache.keys():
+            if not self.states_cache.has(t):
+                e = self.latent_observation_cache.get(t)
+                z: Normal = self.z_ae.encode(e)  # (all latent_obs) -> (z)
+                
                 self.initialize_state_node(t, z)
-                self.latent_observation_cache.add(
-                    t, agent_embed_normal.to(self.device))
+                
 
     def belief_optim_wrap(self):
         """
@@ -215,14 +225,20 @@ class Agent(nn.Module):
                 9. Repeat until convergence, then sample policy and predict next action
         Then increment timestep by 1.
         """
-        # 1 - 4:
+        # 1 - 5:
         t = self.curr_timestep
-        self.observation_cache.add(t, observations)  # cache this observation
-        # only every timestep_size interval, do we run inference.
-        if (self.curr_timestep - 1) % self.timestep_size:
-            self.inference()
-            # 5:
-            self.ground_wm()
+        self.observation_cache.add(t, observations)
+
+        if (self.curr_timestep % self.atomic_timestep) == 0:
+            print('RUNNING UPDATE LATENT OBS')
+            self.atomic_count += 1
+            timesteps = list(range(self.curr_timestep - self.atomic_timestep + 1, self.curr_timestep + 1))
+            print('timesteps??', timesteps)
+            self.update_latent_obs(timesteps, self.atomic_count)
+
+            if (self.atomic_count % self.discrete_step) == 0 and self.atomic_count != 0:
+                self.inference()
+                self.ground_wm()
 
         # 6 - 9:
         
@@ -289,11 +305,10 @@ class Agent(nn.Module):
         for information as to whats really going on, see the update notes.
         """
         # format x
-        all_z_state = self.states_cache.exclude_timesteps([self.curr_timestep]) \
+        all_z_state = self.states_cache \
             .vmap(lambda s: s.get('z')) \
             .values()
         z = all_z_state[0].__class__.concat(all_z_state, 1)  # list of length T-1, concat (B, D) tensors to get (B, T, D) 
-
 
         first_h = self.states_cache.get(max(min(self.window), 1)).get('h')
         h_masks, h_states = self.grounding_wm.initial_state(first_h) # require init from self.wm cuz h from it must have certain num of timesteps
@@ -332,7 +347,7 @@ class Agent(nn.Module):
             P_states: Dict of Ph_t 
             backprop_belief: Boolean on whether or not to call belief optimizer.
         """
-        qs_t = self.states_cache.get_list(timestep)
+        qs_t = self.states_cache.get(timestep)
         qs_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None  # imperative and breaks responsibility but very verbose and clear
         qs_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None  # especially considering this whole function is quite noisy
         ps_t = P_states.get(timestep)
@@ -386,7 +401,7 @@ class Agent(nn.Module):
         """
         Helper func to prune from caches if not in window.
         """
-        new_window = range(self.curr_timestep - self.history, self.curr_timestep)
+        new_window = range(self.atomic_timestep - self.history, self.atomic_timestep)
         removed_timesteps = list(set(self.window) - set(new_window))
         self.window = new_window
 
@@ -441,8 +456,8 @@ class Agent(nn.Module):
     def empty_action_init(self):
         """helper method to lazily create empty a dim"""
         return Normal(
-            z_mean_shape=(self.batch_size, self.timestep_size, self.a_dim,), 
-            z_log_std_shape=(self.batch_size, self.timestep_size, self.a_dim,)
+            z_mean_shape=(self.batch_size, self.atomic_timestep, self.a_dim,), 
+            z_log_std_shape=(self.batch_size, self.atomic_timestep, self.a_dim,)
         )
 
 

@@ -37,7 +37,7 @@ class nmmoWmAdapter(WorldModel):
         )
     
         self._dummy_first = torch.from_numpy(
-            np.full((self.batch_size, 1), False, dtype=bool)).to(self.device)
+            np.full((self.batch_size, self.timesteps), False, dtype=bool)).to(self.device)
 
 
     def forward(self, state: POMDPState) \

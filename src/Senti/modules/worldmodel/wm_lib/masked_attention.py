@@ -170,6 +170,8 @@ class MaskedAttention(nn.Module):
                 heads=self.heads,
                 device=x.device,
             )
+            print('t, T, maxlen, first_b11 shape:', t, t + self.maxlen, self.maxlen, first[:, [[0]]].shape)
+            print('new mask, state_mask', new_mask.shape, state_mask.shape)
             self.orc_block.attn.mask = new_mask
         output, xf_state = self.orc_block(x, xf_state)
 

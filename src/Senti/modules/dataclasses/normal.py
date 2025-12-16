@@ -186,6 +186,11 @@ class Normal(BaseNormal):
             z_mean=func(self.mean),
             z_log_std=func(self.log_std),
         )
+    
+    @classmethod
+    def concat_timesteps(cls, normals):
+        "simple helper func to stack along time dim."
+        return cls.stack(normals, dim=1)
 
 
 T = TypeVar("T", bound="BaseNormal")

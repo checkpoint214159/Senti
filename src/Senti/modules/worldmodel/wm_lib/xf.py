@@ -49,8 +49,8 @@ def attention(
         bias = Q_bte.new_zeros((), dtype=th.float32)
 
     if extra_btT is not None:
-        print('bias shape?', bias.shape)
-        print('extra_btT shape?', extra_btT.shape)
+        # print('bias shape?', bias.shape)
+        # print('extra_btT shape?', extra_btT.shape)
         bias = bias + extra_btT
     # Equivalent to bias + (1 / math.sqrt(e)) * th.einsum("bte,bpe->btp", Q_bte, K_bte)
     # but faster:
@@ -347,10 +347,7 @@ class SelfAttentionLayer(AttentionLayerBase):
         if state:
             state, K_bte, V_bte = self.update_state(state, K_bte, V_bte)
         postproc_closure, Q_bte, K_bte, V_bte = self.attn.preproc_qkv(Q_bte, K_bte, V_bte)
-        print('X_bte', X_bte.shape)
-        print('Q_bte', Q_bte.shape)
-        print('K_bte', K_bte.shape)
-        print('V_bte', V_bte.shape)
+        # print('X_bte', X_bte.shape, 'Q_bte', Q_bte.shape, 'K_bte', K_bte.shape, 'V_bte', V_bte.shape)
         extra_btT = self.relative_attn_logits(X_bte, K_bte.shape[1]) if self.relattn else None
         
         A_bte = attention(

@@ -9,6 +9,8 @@ agent:
   state_depth: 3
   device: cuda
   batch_size: 128
+  inference_steps: 100
+  param_learning_steps: 10
   atomic_timestep: 2
   discrete_step: 2
   history_size: ${eval:"${agent.atomic_timestep} * ${agent.history}"}
@@ -44,10 +46,11 @@ agent:
     latent_az_encoder: ${agent.latent_az_encoder}
     latent_az_decoder: ${agent.latent_az_decoder}
     recurrence_type: transformer
-    attention_memory_size: ${eval:"2 * ${agent.atomic_timestep}"}
+    attention_memory_size: ${eval:"${agent.atomic_timestep} + ${agent.atomic_timestep}"}
     hidsize: ${agent.h_dim}
     n_recurrence_layers: ${agent.state_depth}
     timesteps: ${agent.atomic_timestep}
+    atomic_size: ${agent.atomic_timestep}
     batch_size: ${agent.batch_size}
     device: ${agent.device}
 
@@ -55,10 +58,11 @@ agent:
     latent_az_encoder: ${agent.latent_az_encoder}
     latent_az_decoder: ${agent.latent_az_decoder}
     recurrence_type: transformer
-    attention_memory_size: ${eval:"${agent.history_size} + ${agent.discrete_timestep}"}
+    attention_memory_size: ${eval:"${agent.history_size} + ${agent.discrete_timestep} + ${agent.atomic_timestep}"}  # plus one extra for initial state
     hidsize: ${agent.h_dim}
     n_recurrence_layers: ${agent.state_depth}
-    timesteps: ${agent.atomic_timestep}
+    timesteps: ${eval:"${agent.history_size} + ${agent.discrete_timestep}"}
+    atomic_size: ${agent.atomic_timestep}
     batch_size: ${agent.batch_size}
     device: ${agent.device}
 

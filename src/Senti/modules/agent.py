@@ -94,6 +94,8 @@ class Agent(nn.Module):
         self.history = self.config.history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
         self.device = torch.device(self.config.device)
         self.batch_size = self.config.batch_size
+        self.inference_steps = self.config.inference_steps
+        self.param_learning_steps = self.config.param_learning_steps
         nmmo_agent_check_config(self.config)
         
         # observations and states cache.
@@ -161,7 +163,7 @@ class Agent(nn.Module):
             state = self.states_cache.get(t - 1)
             latent, h_states = self.transition_model(state)
 
-        print('z and h states shape?', h_states.shape, z.shape)
+        # print('z and h states shape?', h_states.shape, z.shape)
         self.states_cache.add(t, POMDPState(
             h=h_states,
             z=z,
@@ -230,15 +232,18 @@ class Agent(nn.Module):
         self.observation_cache.add(t, observations)
 
         if (self.curr_timestep % self.atomic_timestep) == 0:
-            print('RUNNING UPDATE LATENT OBS')
             self.atomic_count += 1
             timesteps = list(range(self.curr_timestep - self.atomic_timestep + 1, self.curr_timestep + 1))
-            print('timesteps??', timesteps)
             self.update_latent_obs(timesteps, self.atomic_count)
 
             if (self.atomic_count % self.discrete_step) == 0 and self.atomic_count != 0:
-                self.inference()
-                self.ground_wm()
+                self.inference(
+                    self.inference_steps,
+                    self.param_learning_steps,
+                )
+                
+                if self.grounding_wm.valid_atomic_timestep_count(self.atomic_count):
+                    self.ground_wm()
 
         # 6 - 9:
         
@@ -250,8 +255,8 @@ class Agent(nn.Module):
 
     def inference(
         self,
-        max_update_steps: int = 2,
-        update_rounds: int = 10,
+        max_update_steps: int = 100,
+        param_learning_steps: int = 10,
         print_statements: bool = True,
     ) -> float:
         """
@@ -261,7 +266,7 @@ class Agent(nn.Module):
 
         Args:
             max_update_steps (int): Maximum number of message passing steps to perform.
-            update_rounds (int): Number of belief updates before checking VFE and (possibly) updating model parameters.
+            param_learning_steps (int): Number of belief updates before checking VFE and (possibly) updating model parameters.
         Returns:
             float: Final VFE after inference and (optional) learning.
         """
@@ -274,13 +279,13 @@ class Agent(nn.Module):
 
             # random timestep group selection, to run inference on
             timestep = random.choice(list(self.states_cache.keys()))
-            print('-----------Selected timestep---------------', timestep)
+            print('-----------Selected atomic timestep---------------', timestep)
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
             P_states = P_states.replica(detach=True, freeze=True)
             self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
 
-            # every 'update_rounds', do param learning (backprop_belief=False)
-            if step % update_rounds == 0:
+            # every 'param_learning_steps', do param learning (backprop_belief=False)
+            if step % param_learning_steps == 0:
                 total_vfe = sum(
                     self.inference_step(
                         timestep=t,
@@ -306,7 +311,7 @@ class Agent(nn.Module):
         """
         # format x
         print('-----------------GROUNDING WM STEP-----------------')
-        all_z_state = self.states_cache \
+        all_z_state = self.states_cache.get_latest(self.grounding_wm.x_atomic) \
             .vmap(lambda s: s.get('z')) \
             .values()
         z = all_z_state[0].__class__.concat(all_z_state, 1)  # list of length T-1, concat (B, D) tensors to get (B, T, D) 

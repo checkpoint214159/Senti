@@ -25,7 +25,9 @@ class nmmoWmAdapter(WorldModel):
     def __init__(self, wm_config: DictConfig):
         super().__init__(**wm_config)
         self.attention_memory_size = wm_config.attention_memory_size  # added this line for easier access
-        self.timesteps = wm_config.timesteps  # added this line for easier access
+        self.x_timesteps = wm_config.timesteps  # added this line for easier access
+        self.atomic_size = wm_config.atomic_size
+        assert (self.x_timesteps / self.atomic_size).is_integer()
         self.batch_size = wm_config.batch_size
         self.device = wm_config.device
         latent_az_encoder_config =  getattr(wm_config, "latent_az_encoder", None)
@@ -37,8 +39,7 @@ class nmmoWmAdapter(WorldModel):
         )
     
         self._dummy_first = torch.from_numpy(
-            np.full((self.batch_size, self.timesteps), False, dtype=bool)).to(self.device)
-
+            np.full((self.batch_size, self.x_timesteps), False, dtype=bool)).to(self.device)
 
     def forward(self, state: POMDPState) \
             -> tuple[torch.Tensor, torch.Tensor, DepthNormal[RecurrentKVState]]:
@@ -50,8 +51,13 @@ class nmmoWmAdapter(WorldModel):
         state_masks = [None] * self.depth
         a_z = torch.concat([zm, zm], dim=-1)  # TODO wait till planning for us to predict actions
         x = self.a_z_encoder(a_z)
-        h = self.resolve_missing_timesteps(x, state.get('h'))
-        h_raw = h.raw()
+        # DO NOT simply pad h. instead. check if x has sufficient timesteps to fulfill the timestep
+        # requirements.
+        assert self.valid_x(x), f"Assertion failed: X tensor requires timestep dim of {self.x_timesteps}, " \
+            f"got instead shape: {x.shape}. failure from valid_x method."
+    
+        # h = self.resolve_missing_timesteps(x, state.get('h'))
+        h_raw = state.get('h').raw()
         next_x, state_masks, h_raw = super().forward(
             x,
             state_masks,
@@ -66,21 +72,42 @@ class nmmoWmAdapter(WorldModel):
             stateclass=h.stateclass,
         )
     
+    @property
+    def x_atomic(self):
+        return int(self.x_timesteps / self.atomic_size)
+
+    def valid_x(self, x:torch.Tensor):
+        "correct way of interfacing without extracting attribute of nmmoWmAdapter."
+        assert isinstance(x, torch.Tensor)
+        return x.shape[1] == self.x_timesteps
+        
+    def valid_timestep_count(self, raw_timestep:int):
+        "variant of valid_x for just the raw timestep count."
+        return raw_timestep >= self.x_timesteps
+    
+    def valid_atomic_timestep_count(self, atomic_timestep:int):
+        "variant of valid_x for just the atomic_timestep count."
+        print('atomic_timestep at validify?', atomic_timestep, self.x_atomic)
+        return atomic_timestep >= self.x_atomic
+
+
     def resolve_missing_timesteps(self, x:torch.Tensor, h: DepthNormal):
         """
+        DEPRECIATED: incorrect way of resolving a different issue. see if we delete it soon.
+
         to prevent erroring out, if the sum of timesteps provided by x and h are not equal to or greater than
         this WM's timesteps', pad h by repeating its last value over and over. the only thing this is crucial
         for, is for bias creation later in the wm. dont worry about understanding this, just know that there is
         noqa if you touch this function.
         """
-        x_timesteps = x.shape[1] / self.timesteps
-        h_timesteps = h.shape[1] / self.timesteps
-        atomic_atm = self.attention_memory_size / self.timesteps
+        x_timesteps = x.shape[1] / self.atomic_size
+        h_timesteps = h.shape[1] / self.atomic_size
+        atomic_atm = self.attention_memory_size / self.atomic_size
         assert x_timesteps.is_integer()
         assert h_timesteps.is_integer()
         assert atomic_atm.is_integer()
         x_timesteps, h_timesteps, atomic_atm = int(x_timesteps), int(h_timesteps), int(atomic_atm)
-        print("x_timesteps, h_timesteps, atomic_atm", x_timesteps, h_timesteps, atomic_atm)
+        # print("x_timesteps, h_timesteps, atomic_atm", x_timesteps, h_timesteps, atomic_atm)
         if x_timesteps + h_timesteps < atomic_atm:
             newshape = [1] * h.dim
             newshape[1] = atomic_atm - x_timesteps
@@ -99,7 +126,7 @@ class nmmoWmAdapter(WorldModel):
         if first is not None:
             # hardcode assume that dimmension = 1 is where timestep dim is. bad practice. whoop!
             shape_like = [1] * first.dim
-            shape_like[1] = self.timesteps
+            shape_like[1] = self.x_timesteps
             h_states = first.repeat(shape_like)
         else:
             h_states = DepthNormal(

@@ -194,6 +194,12 @@ class StateTimestepCache(StateCache):
             value_type=value_type,
             key_type=int,    
         )
+        self.curr_timestep = 0
+
+    def add(self, key: int, value: BaseState):
+        assert key == self.curr_timestep + 1
+        super().add(key, value)
+        self.curr_timestep += 1
 
     def values_at(self, timesteps:list[int]) -> "StateTimestepCache":
         new_data = {t:v for t,v in self._data.items() if t in timesteps}
@@ -204,3 +210,13 @@ class StateTimestepCache(StateCache):
         assert set(not_timesteps).issubset(set(self.keys())), 'StateTimestepCache: Assertion failed. Excluded timesteps must be within' \
             'existing cache timesteps'
         return self.values_at(list(set(self.keys()) - set(not_timesteps)))
+
+
+    def get_latest(self, num:int) -> "StateTimestepCache":
+        """
+        helper method to get the latest num timesteps. exists here because we assume sequential timesteps.
+        """
+        timesteps = list(range(self.curr_timestep - num + 1, self.curr_timestep + 1))
+        print('atomic?', num)
+        print('timesteps?', timesteps)
+        return self.values_at(timesteps)

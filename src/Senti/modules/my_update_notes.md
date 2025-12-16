@@ -94,3 +94,10 @@ Also note, that x doesnt have a list of values of various depth, the _dn semanti
 so what happens to x1_d2 or x1_dn, however many layers there are? well, we feed it to a prediction head, which maps it to the semantic of 'what is next', basically x2. and thus we have described a decoder only architecture!
 
 so here is a final reminder: if s0 and x1 are fed into the model, you get (s0 and) s1, and x2!
+
+
+
+# 17/12/2025 Atomic system
+
+instead of only enumerating in terms of 1 timestep at a time, its much better to abstract to arbitrary number of timesteps under one 'atomic timestep', which is the largest timestep size within which our agent will operate on as a unit timestep dimension. much more flexible and a pretty darn good abstraction if i do say so myself :^D
+

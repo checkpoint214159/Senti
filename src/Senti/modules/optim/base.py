@@ -24,6 +24,12 @@ class BaseLoss(ABC):
         for call in self.calls:
             log, func, a, b = call  # TODO log somewhere
             result = a.compute_energy(b, func)
+            print('log:', log, 'result', result)
+            # if 'h' in log:
+            #     print('log:', log, )
+            #     print('func', func,)
+            #     print('result', result)
+            #     print('a.mean?', a.mean, 'b.mean?', b.mean)
             all += result
 
         self.calls.clear()

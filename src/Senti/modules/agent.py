@@ -151,7 +151,7 @@ class Agent(nn.Module):
         # for each node of state, we store h_t and z_t+1. this semantic is for convenience passing into the
         # world models, but it also makes sense because it predicts h_t+1 and z_t+2, which we can save into
         # a statenode once more.
-        self.window = range(self.atomic_timestep - self.history, self.atomic_timestep)
+        self.atomic_window = range(self.atomic_count - self.history, self.atomic_count)
         self.to(self.device)
 
     def initialize_state_node(self, t: int, z: Normal):
@@ -160,8 +160,12 @@ class Agent(nn.Module):
      
         else:
             # calculate next h using previous state
+            # print('IN INT STATE NODE T > 1, RUNNING TRANSITION MODEL. T IS', t)
             state = self.states_cache.get(t - 1)
+            # print('h before, z before', state.get('h').mean, state.get('z').mean)
             latent, h_states = self.transition_model(state)
+            # print('h after', h_states.mean)
+
 
         # print('z and h states shape?', h_states.shape, z.shape)
         self.states_cache.add(t, POMDPState(
@@ -183,7 +187,6 @@ class Agent(nn.Module):
             obs.append(agent_embed_normal)
 
         stacked = type(obs[0]).concat_timesteps(obs)
-        print('stacked shape?', stacked.shape)
         self.latent_observation_cache.add(
                 atomic_num, stacked.to(self.device))
         
@@ -194,9 +197,10 @@ class Agent(nn.Module):
         """
         for t in self.latent_observation_cache.keys():
             if not self.states_cache.has(t):
-                e = self.latent_observation_cache.get(t)
+                e: Normal = self.latent_observation_cache.get(t)
+                # print('e from obs encoder', e.mean)
                 z: Normal = self.z_ae.encode(e)  # (all latent_obs) -> (z)
-                
+                # print('z from z encoder', z.mean)
                 self.initialize_state_node(t, z)
                 
 
@@ -249,7 +253,7 @@ class Agent(nn.Module):
         
         # self.pi_head.predict('output_from_transmodel')
 
-        # cleanup: shift window and remove all keys not in the window
+        # cleanup: shift atomic_window and remove all keys not in the atomic_window
         self.curr_timestep += 1
         self.prune()
 
@@ -280,10 +284,13 @@ class Agent(nn.Module):
             # random timestep group selection, to run inference on
             timestep = random.choice(list(self.states_cache.keys()))
             print('-----------Selected atomic timestep---------------', timestep)
+            # print("------------------POST INFERENCE RESULT:------------------")
+            # print([v.get('h').mean for v in self.states_cache.values()])
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
             P_states = P_states.replica(detach=True, freeze=True)
             self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
-
+            # print("------------------POST INFERENCE RESULT:------------------")
+            # print([v.get('h').mean for v in self.states_cache.values()])
             # every 'param_learning_steps', do param learning (backprop_belief=False)
             if step % param_learning_steps == 0:
                 total_vfe = sum(
@@ -316,7 +323,7 @@ class Agent(nn.Module):
             .values()
         z = all_z_state[0].__class__.concat(all_z_state, 1)  # list of length T-1, concat (B, D) tensors to get (B, T, D) 
 
-        first_h = self.states_cache.get(max(min(self.window), 1)).get('h')
+        first_h = self.states_cache.get(max(min(self.atomic_window), 1)).get('h')
         h_masks, h_states = self.grounding_wm.initial_state(first_h) # require init from self.wm cuz h from it must have certain num of timesteps
         init_s = POMDPState(
                 h=h_states,
@@ -357,29 +364,52 @@ class Agent(nn.Module):
         qs_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None  # imperative and breaks responsibility but very verbose and clear
         qs_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None  # especially considering this whole function is quite noisy
         ps_t = P_states.get(timestep)
-        
+        print('------------IN ATOMIC TIMESTEP------------', timestep)
         qh_t = qs_t.get('h')
         ph_t = ps_t.get('h')
+        qz_t = qs_t.get('z')
+        pz_t = ps_t.get('z')
+        # print('qh_t.mean?', qh_t.mean)
+        # print('ph_t.mean?', ph_t.mean)
         self.loss_module.include(
             ('qh_t vs ph_t', self.loss_module.kl,
             qh_t, ph_t))
+        self.loss_module.include(
+            ('qz_t vs pz_t', self.loss_module.kl,
+            qz_t, pz_t))
 
         # TODO generalize this to different prior/would-be prior calculating functions
         # -------- prior from t-1 -------- 
         if qs_tm1 is not None:
-            latent, ph_t_from_tm1 = self.transition_model(qs_tm1)
+            # print('qh_tm1.mean?', qs_tm1.get('h').mean)
+            pz_t_from_tm1, ph_t_from_tm1 = self.transition_model(qs_tm1)
+            # print('ph_t_from_tm1.mean?', ph_t_from_tm1.mean)
+            # print('latent z from ph_t_from_tm1?', latent.mean)
+            # print('latent z from qs_t?', qs_t.get('z').mean)
             self.loss_module.include(
                 ('qh_t vs tm1 -> ph_t', self.loss_module.kl,
                 qh_t, ph_t_from_tm1))
+            self.loss_module.include(
+                ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
+                qz_t, pz_t_from_tm1))
 
         # TODO generalize this to different prior/would-be prior calculating functions
         # -------- would-be h-prior at t+1 under current belief -------- 
         if qs_tp1 is not None:
-            latent, ph_at_tp1 = self.transition_model(qs_t)
+            # print('qs_tp1.mean?', qs_tp1.get('h').mean)
+            pz_at_tp1, ph_at_tp1 = self.transition_model(qs_t)
             qh_tp1 = qs_tp1.get('h')
+            qz_tp1 = qs_tp1.get('z')
+            # print('ph_at_tp1.mean?', ph_at_tp1.mean)
+            # print('latent z from ph_at_tp1?', latent.mean)
+            # print('latent z from qs_tp1?', qs_tp1.get('z').mean)
             self.loss_module.include(
                 ('qh_tp1 vs t -> ph_tp1', self.loss_module.kl,  # TODO: better naming convention here??
                 qh_tp1, ph_at_tp1),
+            )
+            self.loss_module.include(
+                ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,  # TODO: better naming convention here??
+                qz_tp1, pz_at_tp1),
             )
         states_energy = self.loss_module.compute()
 
@@ -405,17 +435,28 @@ class Agent(nn.Module):
     
     def prune(self):
         """
-        Helper func to prune from caches if not in window.
+        Helper func to prune from caches if not in atomic_window.
         """
-        new_window = range(self.atomic_timestep - self.history, self.atomic_timestep)
-        removed_timesteps = list(set(self.window) - set(new_window))
-        self.window = new_window
+        new_atomic_window = range(self.atomic_count - self.history, self.atomic_count)
+        removed_atomic_timesteps = list(set(self.atomic_window) - set(new_atomic_window))
+        self.atomic_window = new_atomic_window
+        interleaved = [
+            sub_step 
+            for x in removed_atomic_timesteps
+            for sub_step in range((x - 1) * self.atomic_timestep + 1, x * self.atomic_timestep + 1)
+        ]
 
-        print('REMOVED TIMESTEPS', removed_timesteps)
+        # from removed timesteps, just assume that for each element, subtract atomic_timesteps number
+        # to get the actual timesteps to remove from obs cache.
 
-        for t in removed_timesteps:
+        print('REMOVED ATOMIC TIMESTEPS', removed_atomic_timesteps)
+        print('INTERLEAVED?', interleaved)
+
+        for t in removed_atomic_timesteps:
             self.states_cache.remove(t) if self.states_cache.has(t) else None
             self.latent_observation_cache.remove(t) if self.latent_observation_cache.has(t) else None
+
+        for t in interleaved:
             self.observation_cache.remove(t) if self.observation_cache.has(t) else None
 
     def planning(

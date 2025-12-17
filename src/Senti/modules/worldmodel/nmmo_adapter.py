@@ -3,7 +3,7 @@ import torch
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.modules.dataclasses.normal import DepthNormal
+from Senti.modules.dataclasses.normal import DepthNormal, Normal
 from Senti.modules.dataclasses.pomdpstate import POMDPState
 from Senti.modules.dataclasses.recurrentkvstate import RecurrentKVState
 from Senti.modules.worldmodel.worldmodel import WorldModel
@@ -53,10 +53,9 @@ class nmmoWmAdapter(WorldModel):
         x = self.a_z_encoder(a_z)
         # DO NOT simply pad h. instead. check if x has sufficient timesteps to fulfill the timestep
         # requirements.
+        # h = self.resolve_missing_timesteps(x, state.get('h'))
         assert self.valid_x(x), f"Assertion failed: X tensor requires timestep dim of {self.x_timesteps}, " \
             f"got instead shape: {x.shape}. failure from valid_x method."
-    
-        # h = self.resolve_missing_timesteps(x, state.get('h'))
         h_raw = state.get('h').raw()
         next_x, state_masks, h_raw = super().forward(
             x,
@@ -64,13 +63,12 @@ class nmmoWmAdapter(WorldModel):
             h_raw,
             context={'first': self._dummy_first}
         )
-
         h = state.get('h')
-        return next_x, DepthNormal(
+        return Normal.from_value(next_x).to(self.device), DepthNormal(
             depth=h.depth,
             values=[RecurrentKVState(*kv) for kv in h_raw],
             stateclass=h.stateclass,
-        )
+        ).to(self.device)
     
     @property
     def x_atomic(self):

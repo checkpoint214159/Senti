@@ -316,40 +316,53 @@ class Agent(nn.Module):
         """
         # format x
         print('-----------------GROUNDING WM STEP-----------------')
-        all_z_state = self.states_cache \
+        pred_z = []
+        z_beliefs = self.states_cache \
             .vmap(lambda s: s.get('z')) \
             .values()
-        z = type(all_z_state[0]).concat(all_z_state, 1)  # list of length T-1, concat (B, D) tensors to get (B, T, D) 
 
-        first_h = self.states_cache.get(max(min(self.atomic_window), 1)).get('h')
-        init_s = POMDPState(
-                h=first_h,
-                z=z,
-                a=self.empty_action_init(),
-            ).to(self.device)
-        # print('inits?', init_s.get('h').shape, init_s.get('z').shape)
-        latent, pred_h = self.grounding_wm(
-            init_s
-        )
-        all_h_state = self.states_cache \
+        h_beliefs = self.states_cache \
             .vmap(lambda s: s.get('h')) \
             .values()
-        belief_h = type(all_h_state[0]).concat(all_h_state, 1)
-        pred_h = pred_h.map(lambda x:
-            x[:, :-self.atomic_timestep,]) # exclude the first state, which should still be in this state history
+        
+        z = z_beliefs[0]
+        h = h_beliefs[0]
+        for _ in z_beliefs:
+            s = POMDPState(
+                    h=h,
+                    z=z,
+                    a=self.empty_action_init(),
+                ).to(self.device)
+            z, h = self.grounding_wm(s)
+            pred_z.append(z)
 
+        pred_z = type(pred_z[0]).concat(pred_z, 1) \
+            .map(lambda x:
+                x[:, :-self.atomic_timestep])  # exclude the final predicted z, as we dont have a belief for z at t+1
+        z_beliefs = type(z_beliefs[0]).concat(z_beliefs, 1) \
+            .map(lambda x:
+                x[:, self.atomic_timestep:,]) # exclude the first belief z, which we do not predict for
+        
+        pred_h = h.map(lambda x:
+            x[:, self.atomic_timestep:,]) # exclude the first state, which should still be in this state history
+        h_beliefs = type(h_beliefs[0]).concat(h_beliefs, 1)
+
+        print('grounding wm shapes?')
+        print('pred_z', pred_z.shape)
+        print('z_beliefs', z_beliefs.shape)
+        print('h_beliefs', h_beliefs.shape)
+        print('pred_h', pred_h.shape)
         # correct wm to accurately predict our beliefs.
         self.loss_module.include(
             ('wm_grounding', self.loss_module.kl, 
-            pred_h, belief_h),
+            pred_h, h_beliefs),
+        )
+        self.loss_module.include(
+            ('wm_grounding', self.loss_module.kl, 
+            pred_z, z_beliefs),
         )
 
-        print('wm pred_h', pred_h.shape)
-        print('latent shape?', latent.shape)
-        print('actual h', belief_h.shape)
-
         grounding_loss = self.loss_module.compute()
-        print('grounding_loss?', grounding_loss)
 
         self.optimizer_registry.do_step(
             key='wm',

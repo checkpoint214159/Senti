@@ -95,9 +95,18 @@ so what happens to x1_d2 or x1_dn, however many layers there are? well, we feed 
 
 so here is a final reminder: if s0 and x1 are fed into the model, you get (s0 and) s1, and x2!
 
-
-
 # 17/12/2025 Atomic system
 
 instead of only enumerating in terms of 1 timestep at a time, its much better to abstract to arbitrary number of timesteps under one 'atomic timestep', which is the largest timestep size within which our agent will operate on as a unit timestep dimension. much more flexible and a pretty darn good abstraction if i do say so myself :^D
 
+# 18/12/2025 including Z in vfe state calculation
+
+from the earlier 14/12 log where i describe what the wm is predicting, it also makes sense to treat the return of the model as 'the prediction for z for the next timestep', and since z and s are basically semantically relevant to each other (z is converted into s in the qkv modules of the transformer) including it actually makes our VFE calculations work!
+
+However, I appear to have hastily created this extra fucntionality, without caring about scalability or encapsulation! oh well, future me's problem. should be a one-day fix only where i just ponder the responsibilities of the various componenets yet again as i sip on a monster
+
+# 18/12/2025 LOGGING??
+
+this has been a long time coming, but i should do a lot more and better logging. because I havent even started on planning / policy semantics yet, and its already so complex, with many things to possibly go wrong, and I havent written tests yet (but do I need to? yes yes of course what the hell am i asking that for)
+
+i should make a seperate branch for that since it will be incrementally implemented as i dont assume it will be immediately apparent to me how to best do this

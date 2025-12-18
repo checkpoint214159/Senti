@@ -273,7 +273,7 @@ class DepthNormal(Generic[T], BaseNormal):
         depth = first_dn.depth
         return DepthNormal(
             depth=depth,
-            values=[__class__(first_dn[d]).concat([dns], dim) for d in range(depth)],
+            values=[type(first_dn.values[d]).concat([dn.values[d] for dn in dns], dim) for d in range(depth)],
             stateclass=first_dn.stateclass,
         )
     
@@ -287,7 +287,7 @@ class DepthNormal(Generic[T], BaseNormal):
         depth = first_dn.depth
         return DepthNormal(
             depth=depth,
-            values=[__class__(first_dn[d]).stack([dns], dim) for d in range(depth)],
+            values=[type(first_dn.values[d]).stack([dn.values[d] for dn in dns], dim) for d in range(depth)],
             stateclass=first_dn.stateclass,
         )
     
@@ -314,7 +314,7 @@ class DepthNormal(Generic[T], BaseNormal):
     def map(self, func) -> "DepthNormal":
         return DepthNormal(
             depth=self.depth,
-            values=[func(self.values[d]) for d in range(self.depth)],
+            values=[self.values[d].map(func) for d in range(self.depth)],
             stateclass=self.stateclass,
         )
 

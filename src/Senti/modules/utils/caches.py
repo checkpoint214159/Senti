@@ -217,6 +217,4 @@ class StateTimestepCache(StateCache):
         helper method to get the latest num timesteps. exists here because we assume sequential timesteps.
         """
         timesteps = list(range(self.curr_timestep - num + 1, self.curr_timestep + 1))
-        print('atomic?', num)
-        print('timesteps?', timesteps)
         return self.values_at(timesteps)

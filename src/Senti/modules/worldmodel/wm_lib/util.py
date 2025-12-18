@@ -169,7 +169,7 @@ class ResidualRecurrentBlock(nn.Module):
     def __init__(
         self,
         hidsize,
-        timesteps,
+        cache_keep_len,
         init_scale=1,
         recurrence_type="multi_layer_lstm",
         is_residual=True,
@@ -177,7 +177,6 @@ class ResidualRecurrentBlock(nn.Module):
         pointwise_ratio=4,
         pointwise_use_activation=False,
         attention_heads=8,
-        attention_memory_size=2048,
         attention_mask_style="clipped_causal",
         log_scope="resblock",
         block_number=0,
@@ -215,8 +214,7 @@ class ResidualRecurrentBlock(nn.Module):
         elif recurrence_type == "transformer":
             self.r = MaskedAttention(
                 input_size=hidsize,
-                timesteps=timesteps,
-                memory_size=attention_memory_size,
+                cache_keep_len=cache_keep_len,
                 heads=attention_heads,
                 init_scale=s,
                 norm="none",

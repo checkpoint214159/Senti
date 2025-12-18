@@ -2,7 +2,7 @@
 # we will populate the agent body config with this
 
 agent:
-  history: 5
+  history: 2
   h_dim: 8
   z_dim: 8
   a_dim: 8
@@ -46,10 +46,9 @@ agent:
     latent_az_encoder: ${agent.latent_az_encoder}
     latent_az_decoder: ${agent.latent_az_decoder}
     recurrence_type: transformer
-    attention_memory_size: ${eval:"${agent.atomic_timestep} + ${agent.atomic_timestep}"}
+    cache_keep_len: ${agent.atomic_timestep}
     hidsize: ${agent.h_dim}
     n_recurrence_layers: ${agent.state_depth}
-    timesteps: ${agent.atomic_timestep}
     atomic_size: ${agent.atomic_timestep}
     batch_size: ${agent.batch_size}
     device: ${agent.device}
@@ -58,10 +57,9 @@ agent:
     latent_az_encoder: ${agent.latent_az_encoder}
     latent_az_decoder: ${agent.latent_az_decoder}
     recurrence_type: transformer
-    attention_memory_size: ${eval:"${agent.history_size} + ${agent.discrete_timestep} + ${agent.atomic_timestep}"}  # plus one extra for initial state
+    cache_keep_len: ${eval:"${agent.history_size} + ${agent.discrete_timestep} + ${agent.atomic_timestep}"} # + 1 atomic to include the first state we passed in.
     hidsize: ${agent.h_dim}
     n_recurrence_layers: ${agent.state_depth}
-    timesteps: ${eval:"${agent.history_size} + ${agent.discrete_timestep}"}
     atomic_size: ${agent.atomic_timestep}
     batch_size: ${agent.batch_size}
     device: ${agent.device}

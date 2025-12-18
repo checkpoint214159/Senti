@@ -119,9 +119,8 @@ class MaskedAttention(nn.Module):
     def __init__(
         self,
         input_size,
-        memory_size: int,
+        cache_keep_len: int,
         heads: int,
-        timesteps: int,
         mask: str = "clipped_causal",
         init_scale=1,
         norm="none",
@@ -131,9 +130,9 @@ class MaskedAttention(nn.Module):
         super().__init__()
 
         assert mask in {"none", "clipped_causal"}
-        assert memory_size >= 0
+        assert cache_keep_len >= 0
 
-        self.maxlen = memory_size - timesteps
+        self.maxlen = cache_keep_len
         if mask == "none":
             mask = None
 
@@ -160,16 +159,21 @@ class MaskedAttention(nn.Module):
     def forward(self, x, first, state_mask, xf_state):
         """Forward propagation of a single layer"""
         t = first.shape[1]
+        k, v = xf_state
+        assert k.shape[1] == v.shape[1], 'Assertion failed, key and value in xf_state have mismatching timestep dim'
+        T = k.shape[1] + x.shape[1]
         if self.mask == "clipped_causal":
             new_mask, state_mask = get_mask(
                 first_b11=first[:, [[0]]],
                 state_mask=state_mask,
                 t=t,
-                T=t + self.maxlen,
+                T=T,
                 maxlen=self.maxlen,
                 heads=self.heads,
                 device=x.device,
             )
+            # print('xf state?', xf_state)
+            # print('x.shape?', x.shape)
             # print('t, T, maxlen, first_b11 shape:', t, t + self.maxlen, self.maxlen, first[:, [[0]]].shape)
             # print('new mask, state_mask', new_mask.shape, state_mask.shape)
             self.orc_block.attn.mask = new_mask

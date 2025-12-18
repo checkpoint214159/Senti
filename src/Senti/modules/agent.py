@@ -245,9 +245,7 @@ class Agent(nn.Module):
                     self.inference_steps,
                     self.param_learning_steps,
                 )
-                
-                if self.grounding_wm.valid_atomic_timestep_count(self.atomic_count):
-                    self.ground_wm()
+                self.ground_wm()
 
         # 6 - 9:
         
@@ -318,32 +316,44 @@ class Agent(nn.Module):
         """
         # format x
         print('-----------------GROUNDING WM STEP-----------------')
-        all_z_state = self.states_cache.get_latest(self.grounding_wm.x_atomic) \
+        all_z_state = self.states_cache \
             .vmap(lambda s: s.get('z')) \
             .values()
-        z = all_z_state[0].__class__.concat(all_z_state, 1)  # list of length T-1, concat (B, D) tensors to get (B, T, D) 
+        z = type(all_z_state[0]).concat(all_z_state, 1)  # list of length T-1, concat (B, D) tensors to get (B, T, D) 
 
         first_h = self.states_cache.get(max(min(self.atomic_window), 1)).get('h')
-        h_masks, h_states = self.grounding_wm.initial_state(first_h) # require init from self.wm cuz h from it must have certain num of timesteps
         init_s = POMDPState(
-                h=h_states,
+                h=first_h,
                 z=z,
                 a=self.empty_action_init(),
             ).to(self.device)
-
+        # print('inits?', init_s.get('h').shape, init_s.get('z').shape)
         latent, pred_h = self.grounding_wm(
             init_s
         )
+        all_h_state = self.states_cache \
+            .vmap(lambda s: s.get('h')) \
+            .values()
+        belief_h = type(all_h_state[0]).concat(all_h_state, 1)
+        pred_h = pred_h.map(lambda x:
+            x[:, :-self.atomic_timestep,]) # exclude the first state, which should still be in this state history
 
-        # self.loss_module.include(
-        #         ('wm_grounding', self.loss_module.kl_divergence, 
-        #         qh_tp1, pred_h),
-        #     )
-        # grounding_loss = self.loss_module.compute()
+        # correct wm to accurately predict our beliefs.
+        self.loss_module.include(
+            ('wm_grounding', self.loss_module.kl, 
+            pred_h, belief_h),
+        )
 
-        # self.optimizer_registry.do_step(
-        #     key='wm',
-        #     loss=grounding_loss)
+        print('wm pred_h', pred_h.shape)
+        print('latent shape?', latent.shape)
+        print('actual h', belief_h.shape)
+
+        grounding_loss = self.loss_module.compute()
+        print('grounding_loss?', grounding_loss)
+
+        self.optimizer_registry.do_step(
+            key='wm',
+            loss=grounding_loss)
 
 
     def inference_step(
@@ -386,6 +396,7 @@ class Agent(nn.Module):
             # print('ph_t_from_tm1.mean?', ph_t_from_tm1.mean)
             # print('latent z from ph_t_from_tm1?', latent.mean)
             # print('latent z from qs_t?', qs_t.get('z').mean)
+            # TODO: FIX THIS VERBOSITY
             self.loss_module.include(
                 ('qh_t vs tm1 -> ph_t', self.loss_module.kl,
                 qh_t, ph_t_from_tm1))
@@ -403,6 +414,7 @@ class Agent(nn.Module):
             # print('ph_at_tp1.mean?', ph_at_tp1.mean)
             # print('latent z from ph_at_tp1?', latent.mean)
             # print('latent z from qs_tp1?', qs_tp1.get('z').mean)
+            # TODO: FIX THIS VERBOSITY
             self.loss_module.include(
                 ('qh_tp1 vs t -> ph_tp1', self.loss_module.kl,  # TODO: better naming convention here??
                 qh_tp1, ph_at_tp1),

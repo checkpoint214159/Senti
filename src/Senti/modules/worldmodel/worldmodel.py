@@ -26,6 +26,7 @@ class WorldModel(nn.Module):
 
     def __init__(
         self,
+        cache_keep_len,
         recurrence_type="lstm",
         # impala_width=1,
         # impala_chans=(16, 32, 32),
@@ -44,13 +45,11 @@ class WorldModel(nn.Module):
         # diff_mlp_embedding=False,
         attention_mask_style="clipped_causal",
         attention_heads=8,
-        attention_memory_size=2048,
         use_pointwise_layer=True,
         pointwise_ratio=4,
         pointwise_use_activation=False,
         n_recurrence_layers=1,
         recurrence_is_residual=True,
-        timesteps=128,
         use_pre_lstm_ln=True,  # Not needed for transformer
         **unused_kwargs,
     ):
@@ -100,7 +99,7 @@ class WorldModel(nn.Module):
         self.recurrent_layer = None
         self.recurrent_layer = ResidualRecurrentBlocks(
             hidsize=hidsize,
-            timesteps=timesteps,
+            cache_keep_len=cache_keep_len,
             recurrence_type=recurrence_type,
             is_residual=recurrence_is_residual,
             use_pointwise_layer=use_pointwise_layer,
@@ -108,7 +107,6 @@ class WorldModel(nn.Module):
             pointwise_use_activation=pointwise_use_activation,
             attention_mask_style=attention_mask_style,
             attention_heads=attention_heads,
-            attention_memory_size=attention_memory_size,
             n_block=n_recurrence_layers,
         )
         self.depth = n_recurrence_layers

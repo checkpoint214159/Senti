@@ -3,9 +3,9 @@
 
 agent:
   history: 2
-  h_dim: 8
-  z_dim: 8
-  a_dim: 8
+  h_dim: 64
+  z_dim: 32
+  a_dim: 32
   state_depth: 3
   device: cuda
   batch_size: ${env.PLAYER_N}
@@ -36,15 +36,8 @@ agent:
     obs_hid_size: ${agent.nmmo_obs_encoder.hidden_size}
     z_dim: ${agent.z_dim}
 
-  latent_az_encoder:
-    az_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
-
-  latent_az_decoder:
-    az_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
-
   transition_model:
-    latent_az_encoder: ${agent.latent_az_encoder}
-    latent_az_decoder: ${agent.latent_az_decoder}
+    az_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
     recurrence_type: transformer
     cache_keep_len: ${agent.atomic_timestep}
     hidsize: ${agent.h_dim}
@@ -54,8 +47,7 @@ agent:
     device: ${agent.device}
 
   grounding_wm:
-    latent_az_encoder: ${agent.latent_az_encoder}
-    latent_az_decoder: ${agent.latent_az_decoder}
+    az_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
     recurrence_type: transformer
     cache_keep_len: ${eval:"${agent.history_size} + ${agent.discrete_timestep} + ${agent.atomic_timestep}"} # + 1 atomic to include the first state we passed in.
     hidsize: ${agent.h_dim}

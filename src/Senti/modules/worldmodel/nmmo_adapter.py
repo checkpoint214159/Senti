@@ -29,11 +29,18 @@ class nmmoWmAdapter(WorldModel):
         assert (self.cache_keep_len / self.atomic_size).is_integer()
         self.batch_size = wm_config.batch_size
         self.device = wm_config.device
-        latent_az_encoder_config =  getattr(wm_config, "latent_az_encoder", None)
+        self.az_dim = wm_config.az_dim
         
+        # TODO: make this into an autoencoder. you lazy lazy man
         self.a_z_encoder = nn.Sequential(
-            nn.Linear(latent_az_encoder_config.az_dim, self.hidsize),
+            nn.Linear(self.az_dim, self.hidsize),
             nn.LayerNorm(self.hidsize),
+            nn.ReLU()
+        )
+
+        self.a_z_decoder = nn.Sequential(
+            nn.Linear(self.hidsize, self.az_dim),
+            nn.LayerNorm(self.az_dim),
             nn.ReLU()
         )
     
@@ -49,8 +56,12 @@ class nmmoWmAdapter(WorldModel):
         Basically adapts the args into a digestible form for WM without changing its internals
         """
         am, zm = state.mean('a'), state.mean('z')
+        a_t = am.shape[2]
+        z_t = zm.shape[2]
+        assert a_t + z_t == self.az_dim, "Assertion failed, timesteps from a and z dont sum to self.az_dim"
         state_masks = [None] * self.depth
         a_z = torch.concat([zm, zm], dim=-1)  # TODO wait till planning for us to predict actions
+        
         x = self.a_z_encoder(a_z)
 
         h_raw = state.get('h').raw()
@@ -60,8 +71,13 @@ class nmmoWmAdapter(WorldModel):
             h_raw,
             context={'first': self.generate_dummy_first(x.shape[1])}
         )
+        # from comment above: then we can disassemble az properly too.
+        next_az = self.a_z_decoder(next_x)
+        next_a, next_z = next_az[:, :, :a_t], next_az[:, :, a_t:]
+
         h = state.get('h')
-        return Normal.from_value(next_x).to(self.device), DepthNormal(
+        # until planning is set up, dont return action
+        return Normal.from_value(next_z).to(self.device), DepthNormal(
             depth=h.depth,
             values=[RecurrentKVState(*kv) for kv in h_raw],
             stateclass=h.stateclass,

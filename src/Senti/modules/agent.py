@@ -347,11 +347,11 @@ class Agent(nn.Module):
             x[:, self.atomic_timestep:,]) # exclude the first state, which should still be in this state history
         h_beliefs = type(h_beliefs[0]).concat(h_beliefs, 1)
 
-        print('grounding wm shapes?')
-        print('pred_z', pred_z.shape)
-        print('z_beliefs', z_beliefs.shape)
-        print('h_beliefs', h_beliefs.shape)
-        print('pred_h', pred_h.shape)
+        # print('grounding wm shapes?')
+        # print('pred_z', pred_z.shape)
+        # print('z_beliefs', z_beliefs.shape)
+        # print('h_beliefs', h_beliefs.shape)
+        # print('pred_h', pred_h.shape)
         # correct wm to accurately predict our beliefs.
         self.loss_module.include(
             ('wm_grounding', self.loss_module.kl, 

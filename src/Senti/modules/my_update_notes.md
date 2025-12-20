@@ -110,3 +110,46 @@ However, I appear to have hastily created this extra fucntionality, without cari
 this has been a long time coming, but i should do a lot more and better logging. because I havent even started on planning / policy semantics yet, and its already so complex, with many things to possibly go wrong, and I havent written tests yet (but do I need to? yes yes of course what the hell am i asking that for)
 
 i should make a seperate branch for that since it will be incrementally implemented as i dont assume it will be immediately apparent to me how to best do this
+
+
+# 19/12/2025 Chapter 2: Planning
+
+I have taken approximately 10 months (2 months equivalent of intensive work) to set up this whole repo and its structure, having refined my understanding of program design and also the architecture with which I am researching with. This has largely been spent on the 'zeroth + first part' of the project, that is creating an agent that infers. Not very well so far (obviously since it hasnt been trained), but inference and all the structure around it exists.
+
+Now, it is time for part 2; creating the planning module, which for all I know, is one-of-a-kind in RL-like environment research. Let me just elaborate:
+
+Policy and action prediction: While the semantic of 'policy' is vague and left up to implementation, it roughly translates to 'something that guides the selection of action of the agent'. I will refine it in our case to be "A set of parameters, that when applied to something (probably our beliefs over state, z or h), predicts a belief over what actions the agents will take". Note how I dont say "what actions are best", since as per the philosophy of this project/research, the idea of 'best'/'ground truth' is irrelevant, and what unfolds based on our evolutionary parameters is the optimally selected for (and this selection is stochastic and human-removed, so its not really a truth as it is just reality).
+
+To contextualize it further, I will define it to be a function pi over z, that is a = pi(z) (wont pass in h, clear up the exact semantics between h and z a little more next time).
+
+Inference:
+The agent recieves observations, converts it to a belief, updates its own beliefs (and does some parametric learning too, in the autoencoders + worldmodels). So far so good, except for the fact that I havent considered whether action is updated or learned here (it shouldnt be, but i should make 100% sure)
+
+Planning
+After inference, the agent samples a number of parametric policies that define some kind of or part of a 'policy head', which is the aforementioned pi. (after a = pi(z), we call new_x, new_h = transition(a, z, h), and then new_x is mapped to new_z then new_a. (TODO: define the semantics better next time, about which is predicted by what and when). )
+The core difference is that this is our rollouts, and after we reach some future stopping timestep, we verify against our grounding_wm, which acts as our prior here. This comparison with prior may take the form of risk or pragmatic value (go read EFE mathematical decomposition for specifics).
+
+Then, for the semantics arounding ambiguity / epistemic value, which basically describes a term contributing to an agent's exploratory instincts, to minimize the unknown (reducing ambiguity) == maximize what it knows (increasing epistemic knowledge).
+
+
+# 19/12/2025 Semantics of transition vs grounding wm
+
+I think its important to clarify the semantic differences between the two. First, consider the actions that these modules consume, during inference and planning
+
+Inference:
+Transition model does not predict any action when we create a new state, as the previous action taken post-planning is the action we took
+
+And when calculating VFE during inference steps, action does nto change, as what action we took, is what we took, no matter what we believe (? maybe not? what happens if we allow the agent to adjust its belief over tis actions??)
+
+GWM: Posesses the learned, 'default' policy head, which learns to map the z it predicts to a predicted action, then backprops against the actual actions taken to learn the policy head. In this sense, it encapsulates some essense of the agent's phenotype, that is a part of it that learns to act in the way 'that it already has'.
+
+
+Planning:
+Transition model: Sample a variety(?) of policies from some belief over policies (is this the belief derived from default policy?), compute EFE, and backprop to update belief over policy, once stabilised / terminal step reached, use the updated policy to predict the next action and act
+
+GWM: To create priors over future states, what is 'prior' is our default belief, including our default policy belief. This remains static and detached from the policy belief used by the transition model during planning, even after performing EFE computation and updating the policy belief used by the transition model, this remains static, only updating itself during inference
+
+# 20/12/2025 Action & Policy-head design
+
+I think I will reframe the "action head" of a model to be a function f(z, gene, u), where the 'gene' refers to some kind of 'habitual prior' (lets call it an inductive bias) that is evolutionarily learned, and u is a parameter from some not-so-large dimensional space that has the semantic of a 'policy'. In GWM, this is the default policy that is learned via inference. In the transition model, this will be sampled during planning.
+

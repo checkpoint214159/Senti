@@ -1,6 +1,9 @@
 # populate this config. structure
 # we will populate the agent body config with this
 
+selector:
+  root: /mnt/e/nmmo_actinf/Senti/temp
+
 agent:
   history: 2
   h_dim: 64
@@ -15,6 +18,7 @@ agent:
   discrete_step: 2
   history_size: ${eval:"${agent.atomic_timestep} * ${agent.history}"}
   discrete_timestep: ${eval:"${agent.atomic_timestep} * ${agent.discrete_step}"}
+  planning_horizon: 5
 
   nmmo_obs_encoder:
     name: NmmoEncoders
@@ -55,6 +59,10 @@ agent:
     atomic_size: ${agent.atomic_timestep}
     batch_size: ${agent.batch_size}
     device: ${agent.device}
+
+  action_head:
+    input_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
+    a_dim: ${agent.a_dim}
 
 
   

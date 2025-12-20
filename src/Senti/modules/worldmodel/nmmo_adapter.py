@@ -21,6 +21,10 @@ class nmmoWmAdapter(WorldModel):
     this still respects its module's boundaries: i am not making e.g ResidualRecurrentBlocks
     adhere to my custom typing. basically any module that does the actual computation is sacred from our typing
     
+    The core of this module is its forward, which acts on either the POMDP state dataclass, which has h, z, and a baked into it,
+    or you can call forward_hza with it seperately and leave the creation of state to us
+    Note we do not care how a and z are created, that is up to implementors, we just concatenate them together and feed it into az_encoder
+    to map it to h-dim
     """
     def __init__(self, wm_config: DictConfig):
         super().__init__(**wm_config)
@@ -54,6 +58,8 @@ class nmmoWmAdapter(WorldModel):
         """
         Helper function to run forward method of WM.
         Basically adapts the args into a digestible form for WM without changing its internals
+        This forward is called with the dataclass POMDPState, so it will return dataclass POMDPState.
+        If you wish to call it with h, z and a
         """
         am, zm = state.mean('a'), state.mean('z')
         a_t = am.shape[2]
@@ -77,11 +83,26 @@ class nmmoWmAdapter(WorldModel):
 
         h = state.get('h')
         # until planning is set up, dont return action
-        return Normal.from_value(next_z).to(self.device), DepthNormal(
-            depth=h.depth,
-            values=[RecurrentKVState(*kv) for kv in h_raw],
-            stateclass=h.stateclass,
-        ).to(self.device)
+        s = POMDPState(
+            h=DepthNormal(
+                depth=h.depth,
+                values=[RecurrentKVState(*kv) for kv in h_raw],
+                stateclass=h.stateclass,
+            ).to(self.device),
+            z=Normal.from_value(next_z).to(self.device),
+            a=Normal.from_value(next_a).to(self.device),
+        )
+        return s
+    
+    def forward_hza(self, h: DepthNormal, z: Normal, a: Normal):
+        """
+        Helper func to run forward, whilst passing and recieving the arguments seperately
+        might use this when creating the state is an additional step, as you may be sourcing everything from
+        alll sorts of places
+        """
+        pomdp = POMDPState(h=h,z=z,a=a)
+        pomdp = self.forward(pomdp)
+        return pomdp.get('h'), pomdp.get('z'), pomdp.get('a')
     
     @property
     def x_atomic(self):

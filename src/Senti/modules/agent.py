@@ -96,6 +96,7 @@ class Agent(nn.Module):
         self.batch_size = self.config.batch_size
         self.inference_steps = self.config.inference_steps
         self.param_learning_steps = self.config.param_learning_steps
+        self.planning_horizon = self.config.planning_horizon
         nmmo_agent_check_config(self.config)
         
         # observations and states cache.
@@ -152,27 +153,40 @@ class Agent(nn.Module):
         # world models, but it also makes sense because it predicts h_t+1 and z_t+2, which we can save into
         # a statenode once more.
         self.atomic_window = range(self.atomic_count - self.history, self.atomic_count)
+
         self.to(self.device)
 
-    def initialize_state_node(self, t: int, z: Normal):
-        if t == 1:
-            _, h_states = self.transition_model.initial_state()  # h_0
+    def expose_genes(self) -> tuple[nn.Module]:
+        """
+        interface and exposes the contents of the agents deemed to be genetic
+        havent yet made a proper interface to program against (no base agent class yet)
+        """
+        structural_gene = nn.ModuleDict({
+            'transition_model': self.transition_model,
+            'grounding_wm': self.grounding_wm,
+            'obs_autoencoder': self.obs_autoencoder,
+            'z_ae': self.z_ae
+        })
+
+        return structural_gene, # TODO habitual prior here too
+
+    def initialize_state_node(self, atomic_t: int, z: Normal):
+        if atomic_t == 1:
+            _, h = self.transition_model.initial_state()  # h_0
+            a = self.empty_action_init()
      
         else:
             # calculate next h using previous state
-            # print('IN INT STATE NODE T > 1, RUNNING TRANSITION MODEL. T IS', t)
-            state = self.states_cache.get(t - 1)
-            # print('h before, z before', state.get('h').mean, state.get('z').mean)
-            latent, h_states = self.transition_model(state)
-            # print('h after', h_states.mean)
-
-
-        # print('z and h states shape?', h_states.shape, z.shape)
-        self.states_cache.add(t, POMDPState(
-            h=h_states,
+            state = self.states_cache.get(atomic_t - 1)
+            s = self.transition_model(state)
+            a, h = s.get('a'), s.get('h')
+   
+        self.states_cache.add(atomic_t, POMDPState(
+            h=h,
             z=z,
-            a=self.empty_action_init()).to(self.device)
+            a=a).to(self.device)
         )
+        
 
     def update_latent_obs(self, timesteps:list[int], atomic_num:int):
         """
@@ -182,8 +196,7 @@ class Agent(nn.Module):
         obs = []
         for t in timesteps:
             o = self.observation_cache.get(t)
-            agent_embed_normal, others \
-                    = self.obs_autoencoder.encode(o) # TODO: clarify what is the difference between the two.
+            agent_embed_normal, others = self.obs_autoencoder.encode(o)
             obs.append(agent_embed_normal)
 
         stacked = type(obs[0]).concat_timesteps(obs)
@@ -195,13 +208,11 @@ class Agent(nn.Module):
         """
         Simple helper method to update all timesteps in observation cache.
         """
-        for t in self.latent_observation_cache.keys():
-            if not self.states_cache.has(t):
-                e: Normal = self.latent_observation_cache.get(t)
-                # print('e from obs encoder', e.mean)
+        for atomic_t in self.latent_observation_cache.keys():
+            if not self.states_cache.has(atomic_t):
+                e: Normal = self.latent_observation_cache.get(atomic_t)
                 z: Normal = self.z_ae.encode(e)  # (all latent_obs) -> (z)
-                # print('z from z encoder', z.mean)
-                self.initialize_state_node(t, z)
+                self.initialize_state_node(atomic_t, z)
                 
 
     def belief_optim_wrap(self):
@@ -220,18 +231,18 @@ class Agent(nn.Module):
         Order of execution:
             Inference:
                 1. Encode current observation into a latent observation.
-                2. Use it to update recurrent beliefs h at timestep t
-                3. From existing beliefs h in the belief cache, do belief updating
-                4. Every n steps of belief updating, calculate VFE and backprop model parameters
-                5. Backprop world model based on new sequence of past states post-vfe
+                2. Use it to predict z and h (h is always one timestep behind its representative timestep in the cache)
+                    which act as our state
+                3. From existing state beliefs in the belief cache, do belief updating
+                4. Every n steps of belief updating, calculate total VFE and backprop model parameters
+                5. Ground world-model to match our new beliefs
             Planning:
                 6. Use WM to generate prior over future states
-                7. Sample a policy (params) for action head, then do rollouts and calculate EFE
+                7. Sample a policy (params) for action head, then do rollouts (using transition model) and calculate EFE
                 8. Use EFE to update belief over policies
                 9. Repeat until convergence, then sample policy and predict next action
         Then increment timestep by 1.
         """
-        # 1 - 5:
         t = self.curr_timestep
         self.observation_cache.add(t, observations)
 
@@ -247,6 +258,7 @@ class Agent(nn.Module):
                 )
                 self.ground_wm()
 
+                self.planning()
         # 6 - 9:
         
         # self.pi_head.predict('output_from_transmodel')
@@ -282,13 +294,9 @@ class Agent(nn.Module):
             # random timestep group selection, to run inference on
             timestep = random.choice(list(self.states_cache.keys()))
             print('-----------Selected atomic timestep---------------', timestep)
-            # print("------------------POST INFERENCE RESULT:------------------")
-            # print([v.get('h').mean for v in self.states_cache.values()])
             self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
             P_states = P_states.replica(detach=True, freeze=True)
             self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
-            # print("------------------POST INFERENCE RESULT:------------------")
-            # print([v.get('h').mean for v in self.states_cache.values()])
             # every 'param_learning_steps', do param learning (backprop_belief=False)
             if step % param_learning_steps == 0:
                 total_vfe = sum(
@@ -308,67 +316,7 @@ class Agent(nn.Module):
                 )
 
         return total_vfe
-
-    def ground_wm(self):
-        """
-        Updates predictive WM to bootstrap it to transition model.
-        for information as to whats really going on, see the update notes.
-        """
-        # format x
-        print('-----------------GROUNDING WM STEP-----------------')
-        pred_z = []
-        z_beliefs = self.states_cache \
-            .vmap(lambda s: s.get('z')) \
-            .values()
-
-        h_beliefs = self.states_cache \
-            .vmap(lambda s: s.get('h')) \
-            .values()
-        
-        z = z_beliefs[0]
-        h = h_beliefs[0]
-        for _ in z_beliefs:
-            s = POMDPState(
-                    h=h,
-                    z=z,
-                    a=self.empty_action_init(),
-                ).to(self.device)
-            z, h = self.grounding_wm(s)
-            pred_z.append(z)
-
-        pred_z = type(pred_z[0]).concat(pred_z, 1) \
-            .map(lambda x:
-                x[:, :-self.atomic_timestep])  # exclude the final predicted z, as we dont have a belief for z at t+1
-        z_beliefs = type(z_beliefs[0]).concat(z_beliefs, 1) \
-            .map(lambda x:
-                x[:, self.atomic_timestep:,]) # exclude the first belief z, which we do not predict for
-        
-        pred_h = h.map(lambda x:
-            x[:, self.atomic_timestep:,]) # exclude the first state, which should still be in this state history
-        h_beliefs = type(h_beliefs[0]).concat(h_beliefs, 1)
-
-        # print('grounding wm shapes?')
-        # print('pred_z', pred_z.shape)
-        # print('z_beliefs', z_beliefs.shape)
-        # print('h_beliefs', h_beliefs.shape)
-        # print('pred_h', pred_h.shape)
-        # correct wm to accurately predict our beliefs.
-        self.loss_module.include(
-            ('wm_grounding', self.loss_module.kl, 
-            pred_h, h_beliefs),
-        )
-        self.loss_module.include(
-            ('wm_grounding', self.loss_module.kl, 
-            pred_z, z_beliefs),
-        )
-
-        grounding_loss = self.loss_module.compute()
-
-        self.optimizer_registry.do_step(
-            key='wm',
-            loss=grounding_loss)
-
-
+    
     def inference_step(
             self,
             timestep,
@@ -392,8 +340,6 @@ class Agent(nn.Module):
         ph_t = ps_t.get('h')
         qz_t = qs_t.get('z')
         pz_t = ps_t.get('z')
-        # print('qh_t.mean?', qh_t.mean)
-        # print('ph_t.mean?', ph_t.mean)
         self.loss_module.include(
             ('qh_t vs ph_t', self.loss_module.kl,
             qh_t, ph_t))
@@ -405,10 +351,8 @@ class Agent(nn.Module):
         # -------- prior from t-1 -------- 
         if qs_tm1 is not None:
             # print('qh_tm1.mean?', qs_tm1.get('h').mean)
-            pz_t_from_tm1, ph_t_from_tm1 = self.transition_model(qs_tm1)
-            # print('ph_t_from_tm1.mean?', ph_t_from_tm1.mean)
-            # print('latent z from ph_t_from_tm1?', latent.mean)
-            # print('latent z from qs_t?', qs_t.get('z').mean)
+            ps_t_from_tm1 = self.transition_model(qs_tm1)
+            pz_t_from_tm1, ph_t_from_tm1 = ps_t_from_tm1.get('z'), ps_t_from_tm1.get('h')
             # TODO: FIX THIS VERBOSITY
             self.loss_module.include(
                 ('qh_t vs tm1 -> ph_t', self.loss_module.kl,
@@ -421,12 +365,10 @@ class Agent(nn.Module):
         # -------- would-be h-prior at t+1 under current belief -------- 
         if qs_tp1 is not None:
             # print('qs_tp1.mean?', qs_tp1.get('h').mean)
-            pz_at_tp1, ph_at_tp1 = self.transition_model(qs_t)
+            ps_at_tp1 = self.transition_model(qs_t)
+            pz_at_tp1, ph_at_tp1 = ps_at_tp1.get('z'), ps_at_tp1.get('h')
             qh_tp1 = qs_tp1.get('h')
             qz_tp1 = qs_tp1.get('z')
-            # print('ph_at_tp1.mean?', ph_at_tp1.mean)
-            # print('latent z from ph_at_tp1?', latent.mean)
-            # print('latent z from qs_tp1?', qs_tp1.get('z').mean)
             # TODO: FIX THIS VERBOSITY
             self.loss_module.include(
                 ('qh_tp1 vs t -> ph_tp1', self.loss_module.kl,  # TODO: better naming convention here??
@@ -457,6 +399,82 @@ class Agent(nn.Module):
             )
 
         return total_energy
+
+    def ground_wm(self):
+        """
+        Updates predictive WM to bootstrap it to transition model.
+        for information as to whats really going on, see the update notes.
+        """
+        # format x
+        print('-----------------GROUNDING WM STEP-----------------')
+        pred_z = []
+        a_beliefs = self.states_cache \
+            .vmap(lambda s: s.get('a')) \
+            .values()
+        z_beliefs = self.states_cache \
+            .vmap(lambda s: s.get('z')) \
+            .values()
+        h_beliefs = self.states_cache \
+            .vmap(lambda s: s.get('h')) \
+            .values()
+        
+        z = z_beliefs[0]
+        h = h_beliefs[0]
+        a = self.empty_action_init()
+        for _ in z_beliefs:
+            h, z, a = self.grounding_wm.forward_hza(h, z, a)
+            pred_z.append(z)
+
+        pred_z = type(pred_z[0]).concat(pred_z, 1) \
+            .map(lambda x:
+                x[:, :-self.atomic_timestep])  # exclude the final predicted z, as we dont have a belief for z at t+1
+        z_beliefs = type(z_beliefs[0]).concat(z_beliefs, 1) \
+            .map(lambda x:
+                x[:, self.atomic_timestep:,]) # exclude the first belief z, which we do not predict for
+        
+        pred_h = h.map(lambda x:
+            x[:, self.atomic_timestep:,]) # exclude the first state, which should still be in this state history
+        h_beliefs = type(h_beliefs[0]).concat(h_beliefs, 1)
+
+        # correct wm to accurately predict our beliefs.
+        self.loss_module.include(
+            ('wm_grounding', self.loss_module.kl, 
+            pred_h, h_beliefs),
+        )
+        self.loss_module.include(
+            ('wm_grounding', self.loss_module.kl, 
+            pred_z, z_beliefs),
+        )
+
+        grounding_loss = self.loss_module.compute()
+
+        self.optimizer_registry.do_step(
+            key='wm',
+            loss=grounding_loss)
+        
+    def save_genome(self):
+        self.genome.save()
+
+    # def load_genome(self):
+
+    
+    def planning(
+            self,
+        ):
+        """
+        """
+        # create planning priors
+        # s = self.states_cache.get_latest(1) \
+        #     .values()[0]
+        # prior_s = [s]
+        # for _ in range(self.planning_horizon):
+        #     s = self.grounding_wm(s)
+        #     prior_s.append(s)
+
+
+        
+        # print('prior_s?', [(s.mean('h'), s.mean('z'), s.mean('a')) for s in prior_s])
+        
     
     def prune(self):
         """
@@ -484,46 +502,6 @@ class Agent(nn.Module):
         for t in interleaved:
             self.observation_cache.remove(t) if self.observation_cache.has(t) else None
 
-    def planning(
-            self,
-            o_target
-        ):
-        """
-        Method to run planning. TODO destroy this?
-        """
-        total_efe = {}
-        for i in range(max_policies_sampled):
-            pi = policies[i].unsqueeze(0)  # shape: (1, policy_dim)
-            ph_t = self.states_cache[self.curr_timestep]
-
-            efe = 0
-            for t in range(horizon):
-                # Predict next state
-                ps_next = self.transition_model(ph_t, pi)
-
-                # Predict observation
-                po_next = self.z_decoder(ps_next)
-                o_dist = Normal(po_next, 1.0)
-                o_sample = o_dist.rsample()
-
-                # epistemic value
-                qs_next = self.z_encoder(o_sample)
-                epistemic = self.kl_divergence(qs_next, ps_next)
-
-                # instrumental value
-                energy_obs = self.log_likelihood(o_target, po_next)  # for now, very simple calc
-
-                efe += epistemic - energy_obs
-                ph_t = ps_next.detach()  # move to next state (prevent backprop across time)
-
-            total_efe[i] = efe
-
-        return total_efe  # shape: (N,)
-
-    def compute_efe_node(self):
-        """
-        Compute EFE. See what to do first
-        """
 
     def empty_action_init(self):
         """helper method to lazily create empty a dim"""

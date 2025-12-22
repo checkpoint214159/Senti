@@ -15,58 +15,45 @@ class BaseGenome:
     """
     Simple metadata driven BaseGenome class to wrap around a module. So that we can easily wrap around anything
     and call our methods for it
-    Do not provide any default kwargs: force initializer to provide everything
+    Do not provide any default kwargs: force initializer to provide the state dict
     Also doesnt handle pathing or filenaming, that should be up to the Selector that is using us
     """
     def __init__(self,
-        gene: torch.nn.Module,
-    ):
-        self.gene = gene 
+        gene: dict,
+    ): 
+        # assert isinstance(gene, torch.nn.Module) or isinstance(gene, torch.Tensor), 'Assertion failed. ' \
+        #     'Got gene not as nn.Module nor Tensor.'
+        self.gene = gene
 
-    # def make_filename(self):
-    #     return self.path / f"name_gen{self.generation}_fitness{self.fitness}.pth"
+    # @property
+    # def gene_state(self):
+    #     if isinstance(self.gene, torch.nn.Module):
+    #         return self.gene.state_dict()
+    #     else:
+    #         return self.gene
 
-    def save(self, path, metadata={}):
-        # fn = self.make_filename()
+    def state_dict(self):
         state = {
-            'gene': self.gene.state_dict(),
-            'metadata': metadata
+            'gene': self.gene,
         }
-        # print('fn?', fn)
-        torch.save(state, path)
+        return state
 
     @classmethod
-    def load(cls, path, gene_architecture):
-        """
-        TODO not updated this yet
-        path: path to .pth file
-        gene_architecture: The instantiated ModuleDict/Module 
-                           ready to receive weights.
-        """
-        checkpoint = torch.load(path)
-        
-        gene_architecture.load_state_dict(checkpoint['state_dict'])
-        generation =  checkpoint['metadata']['gen']
-        fitness = checkpoint['metadata']['fitness']
-        
-        instance = cls(gene_architecture)
-        
-        instance.generation = checkpoint['metadata']['gen']
-        instance.fitness = checkpoint['metadata']['fitness']
-        
-        return instance
+    def load(cls, state:dict):
+        return cls(state['gene'])
 
 
 @GENOME.register_module()
 class MutateGenome(BaseGenome):
     """
     Flexible mutation genome that supports different noise distributions
-    and targets specific 'habitual' parameters.
+    and targets specific 'preferences' parameters.
     """
     def __init__(self,
-                 noise_type: str = 'gaussian', 
-                 **kwargs):
-        super().__init__(**kwargs)
+                gene,
+                noise_type: str = 'gaussian', 
+                ):
+        super().__init__(gene)
         self.noise_type = noise_type.lower()
         
     def _generate_noise(self, base_tensor, scale):
@@ -84,11 +71,11 @@ class MutateGenome(BaseGenome):
 
     def mutate(self, mutation_rate=0.01):
         """
-        Applies mutation to gene.
+        Applies mutation to gene. TODO update thhis
         """
         with torch.no_state(): # Mutation shouldn't be tracked for gradients
-                noise = self._generate_noise(self.gene.habitual_prior, mutation_rate)
-                self.gene.habitual_prior.add_(noise)
+            noise = self._generate_noise(self.gene.preferences_prior, mutation_rate)
+            self.gene.preferences_prior.add_(noise)
 
 
 @dataclass
@@ -113,6 +100,7 @@ class BaseSelector:
 
     def add(self, name:str, genome: BaseGenome,
         fitness: float, generation: int, **kwargs):
+        assert name not in self._registry, 'unique names for now'
         path = (Path(self.root) / name)
         path.mkdir(parents=True, exist_ok=True)
         record = GenomeRecord(
@@ -140,17 +128,41 @@ class BaseSelector:
     
     def checkpoint(self, name):
         """
-        calls the named Genome's save functionality
+        retrieves genome's state and saves it.
         """
         if name not in self._registry:
             raise KeyError(f"Genome '{name}' not found in registry.")
         
         record = self._registry[name]
+        fn = self.make_filename(record)
         metadata = {
             'generation': record.generation,
             'fitness': record.fitness,
+            'type': type(record.genome).__name__
         }
-        record.genome.save(self.make_filename(record), metadata)
+        state = record.genome.state_dict()
+        overlapping_keys = set(state.keys()) & set(metadata.keys())
+        assert not overlapping_keys, 'Assertion failed, state and metadata share keys, check genome to see if saved inappropriate key names'
+        state = state | metadata
+        torch.save(state, fn)
+
+    def load(self, name, path):
+        """
+        loads a genome from a path, and adds it to registry with a name
+        """
+        state = torch.load(path)
+        genome_cls = state['type']
+        fitness = state['fitness']
+        generation = state['generation']
+
+        genome = GENOME.run(genome_cls, 'load', state)
+        self.add(
+            name=name,
+            genome=genome,
+            fitness=fitness,
+            generation=generation
+        )
+
 
     def query(self, generation: Optional[int] = None, min_fitness: Optional[float] = None) \
         -> List[GenomeRecord]:
@@ -166,21 +178,21 @@ class BaseSelector:
         sorted_records = self.sort(by="fitness", descending=True)
         return [r.genome for r in sorted_records[:n]]
 
-    def save_to_csv(self, filename: str = "registry_metadata.csv"):
-        """Exports the metadata (minus the actual genome objects) to CSV."""
-        path = self.root / filename
+    # def save_to_csv(self, filename: str = "registry_metadata.csv"):
+    #     """Exports the metadata (minus the actual genome objects) to CSV."""
+    #     path = self.root / filename
         
-        data = []
-        for r in self._registry.values():
-            # Combine core stats with whatever is in metadata dict
-            row = {
-                "name": r.name,
-                "fitness": r.fitness,
-                "generation": r.generation,
-                "path": str(r.path)
-            }
-            if r.metadata:
-                row.update(r.metadata)
-            data.append(row)
+    #     data = []
+    #     for r in self._registry.values():
+    #         # Combine core stats with whatever is in metadata dict
+    #         row = {
+    #             "name": r.name,
+    #             "fitness": r.fitness,
+    #             "generation": r.generation,
+    #             "path": str(r.path)
+    #         }
+    #         if r.metadata:
+    #             row.update(r.metadata)
+    #         data.append(row)
             
-        pd.DataFrame(data).to_csv(path, index=False)
+    #     pd.DataFrame(data).to_csv(path, index=False)

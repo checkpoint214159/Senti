@@ -151,5 +151,19 @@ GWM: To create priors over future states, what is 'prior' is our default belief,
 
 # 20/12/2025 Action & Policy-head design
 
-I think I will reframe the "action head" of a model to be a function f(z, gene, u), where the 'gene' refers to some kind of 'habitual prior' (lets call it an inductive bias) that is evolutionarily learned, and u is a parameter from some not-so-large dimensional space that has the semantic of a 'policy'. In GWM, this is the default policy that is learned via inference. In the transition model, this will be sampled during planning.
+I think I will reframe the "action head" of a model to be a function f(z, gene, u), where the 'gene' refers to some kind of 'preferences prior' (lets call it an inductive bias) that is evolutionarily learned, and u is a parameter from some not-so-large dimensional space that has the semantic of a 'policy'. In GWM, this is the default policy that is learned via inference. In the transition model, this will be sampled during planning.
+
+# 22/12/2025 Policy update cycle
+
+Here is something I figured after yapping and bouncing off Gemini for a bit:
+
+1. Start with a policy that is initialized based off the Gene
+2. During inference, do not update policy
+3. During grounding wm, use the 'current policy', which at t=1 is the policy inited off the Gene. This will be updated to reflect the post-inference priors
+4. During planning, sample from this policy, and do rollouts. Calculate EFE and whatnot, backprop to update this policy.
+5. The updated policy and the pre-updated policy are combined to get the 'current policy', via 'temporal smoothing':
+$u_{prior} = (1 - \lambda) \cdot u_{GWM}(z_t) + \lambda \cdot u^*_{t-1}$
+6. Sample the next action ONLY from the updated policy
+
+word
 

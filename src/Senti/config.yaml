@@ -5,6 +5,9 @@ selector:
   root: /mnt/e/nmmo_actinf/Senti/temp
 
 agent:
+  preferences_dim: 32
+  policy_dim: 16
+  n_policies: 4
   history: 2
   h_dim: 64
   z_dim: 32
@@ -61,8 +64,11 @@ agent:
     device: ${agent.device}
 
   action_head:
-    input_dim: ${eval:"${agent.z_dim} + ${agent.a_dim}"}
+    x_dim: ${agent.h_dim}
     a_dim: ${agent.a_dim}
+    gene_dim: ${agent.preferences_dim}
+    policy_dim: ${agent.policy_dim}
+
 
 
   

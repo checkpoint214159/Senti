@@ -73,20 +73,13 @@ logging.info("Logging is set up!")
 class Agent(nn.Module):
     """
     An agent built on the concepts of active inference.
-
-    For now, only amortized inference will be supported. For research purposes i will try and make non-amortized easily
-    integrable with the overall flow. (not happening bud)
     """
 
     def __init__(self,
         config: DictConfig,
     ):
         """
-        The agent contains the following modules:
-            - CLIP encoder for o -> lat_o
-            - state encoder, then decoder for lat_o -> z -> lat_o
-            - TransitionModel (rename to dynamics soon?) h_tp1 = f(h_tm1, z_tm1, a_tm1)
-            - 
+
         """
         # admin stuff
         super().__init__()
@@ -128,6 +121,8 @@ class Agent(nn.Module):
         self.grounding_wm = WORLDMODELS.build("nmmoWmAdapter", config.grounding_wm)
         logging.info("Successfully loaded grounding_wm")
 
+        self.policy = torch.ones((self.config.preferences_dim,))
+
         # optimization
         inference_params = (
             list(self.obs_autoencoder.parameters()) + 
@@ -156,19 +151,21 @@ class Agent(nn.Module):
 
         self.to(self.device)
 
-    def expose_genes(self) -> tuple[nn.Module]:
+    def expose_morphology(self) -> dict:
         """
-        interface and exposes the contents of the agents deemed to be genetic
-        havent yet made a proper interface to program against (no base agent class yet)
+        interface and exposes the contents of the agents deemed to be morphologically relevant
         """
-        structural_gene = nn.ModuleDict({
+        morphology = nn.ModuleDict({
             'transition_model': self.transition_model,
             'grounding_wm': self.grounding_wm,
             'obs_autoencoder': self.obs_autoencoder,
             'z_ae': self.z_ae
         })
 
-        return structural_gene, # TODO habitual prior here too
+        return morphology.state_dict()
+    
+    def expose_policy(self):
+        return self.policy
 
     def initialize_state_node(self, atomic_t: int, z: Normal):
         if atomic_t == 1:

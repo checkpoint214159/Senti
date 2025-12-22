@@ -24,7 +24,7 @@ class BaseActionHead(ABC, nn.Module):
 
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.input_dim = config.input_dim
+        self.x_dim = config.x_dim
         self.a_dim = config.a_dim
 
     

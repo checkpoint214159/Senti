@@ -22,6 +22,17 @@ class Registry:
     def build(self, name: str, *args: Any, **kwargs: Any) -> Any:
         cls = self.get(name)
         return cls(*args, **kwargs)
+    
+    def run(self, name:str, func:str, *args:Any, **kwargs:Any):
+        cls = self.get(name)
+        
+        if hasattr(cls, func):
+            attr = getattr(cls, func)
+            if callable(attr):
+                return attr(*args, **kwargs)
+            raise TypeError(f"Attribute '{func}' in class '{name}' is not callable.")
+        
+        raise AttributeError(f"Class '{name}' has no method named '{func}'")
 
     def list_modules(self) -> list[str]:
         return list(self._module_dict.keys())

@@ -9,10 +9,10 @@ agent:
   policy_dim: 16
   n_policies: 4
   history: 2
-  h_dim: 64
-  z_dim: 32
-  a_dim: 32
-  state_depth: 3
+  h_dim: 8
+  z_dim: 8
+  a_dim: 8
+  state_depth: 1
   device: cuda
   batch_size: ${env.PLAYER_N}
   inference_steps: 25

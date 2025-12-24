@@ -4,6 +4,7 @@ from typing import Generic, Iterable, List, Type, TypeVar
 
 import torch
 from torch import nn
+from torch.distributions import Independent
 
 from Senti.modules.dataclasses.base import BaseState
 from Senti.modules.optim.base import BaseLoss
@@ -53,11 +54,12 @@ class BaseNormal(BaseState):
 
     @property
     def std(self):
-        return torch.exp(self.log_std)
+        # clamp for numerical stability??
+        return torch.exp(torch.clamp(self.log_std, -5, 2))
 
     @property
     def as_distribution(self):
-        return torch.distributions.Normal(self.mean, self.std)
+        return Independent(torch.distributions.Normal(self.mean, self.std), 1) # "1 from the right"
 
     def sample(self, n=None):
         dist = self.as_distribution
@@ -66,11 +68,14 @@ class BaseNormal(BaseState):
         return dist.rsample((n,))
 
     def log_prob(self, x):
-        return self.as_distribution.log_prob(x)
+        return self.as_distribution.log_prob(x)  # because of independent, last dimension will be summed across
 
     @abstractmethod
     def concat(self, other, dim) -> "BaseNormal":
         ...
+    
+    def as_tensor(self):
+        return self.sample()
 
 
 class Normal(BaseNormal):
@@ -122,20 +127,16 @@ class Normal(BaseNormal):
                 z_log_std=log_std, log_std_init=log_std_init)
 
     @property
-    def mean(self):
-        return self.z_mean
+    def mean(self): return self.z_mean
         
     @property
-    def log_std(self):
-        return self.z_log_std
+    def log_std(self): return self.z_log_std
     
     @property
-    def shape(self):
-        return self.z_mean.shape
+    def shape(self): return self.z_mean.shape
     
     @property
-    def dim(self):
-        return self.z_mean.ndim
+    def dim(self): return self.z_mean.ndim
     
     def compute_energy(self, other, loss_func):
         """

@@ -101,9 +101,7 @@ class Agent(nn.Module):
 
         # dimensionality and tensor shapes
         self.state_depth = self.config.state_depth
-        self.h_dim = self.config.h_dim
-        self.z_dim = self.config.z_dim
-        self.a_dim = self.z_dim
+        self.a_dim = self.z_dim  # TODO move to action head
 
         # other non-model modules
         self.loss_module = DistributionLosses()
@@ -115,13 +113,16 @@ class Agent(nn.Module):
         self.z_ae = AUTOENCODERS.build("zAE", config.zAE)
 
         # maps latent observation to state, for now only takes latent obs of image
-        self.transition_model = WORLDMODELS.build("nmmoWmAdapter", config.transition_model)
+        self.transition_model = WORLDMODELS.build("RSSM", config.transition_model)
         logging.info("Successfully loaded transition_model")
 
-        self.grounding_wm = WORLDMODELS.build("nmmoWmAdapter", config.grounding_wm)
+        self.grounding_wm = WORLDMODELS.build("RSSM", config.grounding_wm)
         logging.info("Successfully loaded grounding_wm")
 
-        self.policy = torch.ones((self.config.preferences_dim,))
+        self.policy = Normal(
+            z_mean_shape=(self.config.preferences_dim,),
+            z_log_std_shape=(self.config.preferences_dim,)
+        )
 
         # optimization
         inference_params = (
@@ -164,19 +165,25 @@ class Agent(nn.Module):
 
         return morphology.state_dict()
     
-    def expose_policy(self):
-        return self.policy
+    def expose_policy(self) -> dict:
+        return {
+            'mean': self.policy.mean,
+            'log_std': self.policy.log_std
+        }
 
-    def initialize_state_node(self, atomic_t: int, z: Normal):
+    def initialize_state_node(self, atomic_t: int):
+        a = self.empty_action_init()  # FOR NOW
         if atomic_t == 1:
-            _, h = self.transition_model.initial_state()  # h_0
-            a = self.empty_action_init()
+            h = self.transition_model.initial_h()  # TODO this could be learned?
+            # a = self.empty_action_init()
      
         else:
             # calculate next h using previous state
             state = self.states_cache.get(atomic_t - 1)
-            s = self.transition_model(state)
-            a, h = s.get('a'), s.get('h')
+            h = self.transition_model.forward_h(state)
+            # a, h = s.get('a'), s.get('h')
+
+        z = self.forward_z(h, o_embed_t=None)  # generate prior for z here
    
         self.states_cache.add(atomic_t, POMDPState(
             h=h,
@@ -207,9 +214,8 @@ class Agent(nn.Module):
         """
         for atomic_t in self.latent_observation_cache.keys():
             if not self.states_cache.has(atomic_t):
-                e: Normal = self.latent_observation_cache.get(atomic_t)
-                z: Normal = self.z_ae.encode(e)  # (all latent_obs) -> (z)
-                self.initialize_state_node(atomic_t, z)
+                # obs: Normal = self.latent_observation_cache.get(atomic_t)
+                self.initialize_state_node(atomic_t)
                 
 
     def belief_optim_wrap(self):
@@ -253,7 +259,7 @@ class Agent(nn.Module):
                     self.inference_steps,
                     self.param_learning_steps,
                 )
-                self.ground_wm()
+                # self.ground_wm()
 
                 self.planning()
         # 6 - 9:
@@ -337,9 +343,11 @@ class Agent(nn.Module):
         ph_t = ps_t.get('h')
         qz_t = qs_t.get('z')
         pz_t = ps_t.get('z')
-        self.loss_module.include(
-            ('qh_t vs ph_t', self.loss_module.kl,
-            qh_t, ph_t))
+        print('qz_t before?', qz_t.mean)
+        print('qh_t before?', qh_t.mean)
+        # self.loss_module.include(
+        #     ('qh_t vs ph_t', self.loss_module.kl,
+        #     qh_t, ph_t))
         self.loss_module.include(
             ('qz_t vs pz_t', self.loss_module.kl,
             qz_t, pz_t))
@@ -347,18 +355,13 @@ class Agent(nn.Module):
         # TODO generalize this to different prior/would-be prior calculating functions
         # -------- prior from t-1 -------- 
         if qs_tm1 is not None:
-            # print('qh_tm1.mean?', qs_tm1.get('h').mean)
             ps_t_from_tm1 = self.transition_model(qs_tm1)
             pz_t_from_tm1, ph_t_from_tm1 = ps_t_from_tm1.get('z'), ps_t_from_tm1.get('h')
             # TODO: FIX THIS VERBOSITY
             self.loss_module.include(
-                ('qh_t vs tm1 -> ph_t', self.loss_module.kl,
-                qh_t, ph_t_from_tm1))
-            self.loss_module.include(
                 ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
                 qz_t, pz_t_from_tm1))
 
-        # TODO generalize this to different prior/would-be prior calculating functions
         # -------- would-be h-prior at t+1 under current belief -------- 
         if qs_tp1 is not None:
             # print('qs_tp1.mean?', qs_tp1.get('h').mean)
@@ -367,10 +370,6 @@ class Agent(nn.Module):
             qh_tp1 = qs_tp1.get('h')
             qz_tp1 = qs_tp1.get('z')
             # TODO: FIX THIS VERBOSITY
-            self.loss_module.include(
-                ('qh_tp1 vs t -> ph_tp1', self.loss_module.kl,  # TODO: better naming convention here??
-                qh_tp1, ph_at_tp1),
-            )
             self.loss_module.include(
                 ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,  # TODO: better naming convention here??
                 qz_tp1, pz_at_tp1),
@@ -394,7 +393,8 @@ class Agent(nn.Module):
                 key='states_cache',
                 loss=total_energy
             )
-
+        print('qz_t after?', qz_t.mean)
+        print('qh_t after?', qh_t.mean)
         return total_energy
 
     def ground_wm(self):

@@ -167,3 +167,23 @@ $u_{prior} = (1 - \lambda) \cdot u_{GWM}(z_t) + \lambda \cdot u^*_{t-1}$
 
 word
 
+# 22/12/2025 Big action-wise TODO list
+
+TODOs for action related semantics
+
+1. Make some action autoencoder, so we can map to and from action space -> latent action space
+2. Decide on 'containerising' the wm class and action head class inside a new one
+3. 'action' belief updating too
+
+yeah wait thats about it
+
+# 23/12/2025 BIG SEMANTIC CHANGE!!!!
+
+shits cooked gang, we gonna have to ditch our old h,z,a interpretation and use Dreamer's. I originally used the openai vpt minecraft model architecture cuz of the original scope, but for active inference frankly dreamer makes 10x more sense.
+
+h: Deterministic state. Predicts z_t, is predicted via h_t = f(h_t-1, z_t-1, a_t-1)
+z: Stochastic 'belief' state. h predicts z via p(z|h) (or also p(z|h, o))
+a: Action.
+
+
+We will now use RSSM instead of the stupid wm from openai. thanks openai

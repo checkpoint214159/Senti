@@ -40,6 +40,12 @@ agent:
     encoder: ${agent.nmmo_obs_encoder}
     decoder: ${agent.nmmo_obs_decoder}
 
+  zh_o:
+    h_dim: ${agent.h_dim}
+    z_dim: ${agent.z_dim}
+    obs_dim: ${agent.obs_dim}
+    hidden_dim: 20
+
   # zAE:
   #   obs_hid_size: ${agent.nmmo_obs_encoder.hidden_size}
   #   z_dim: ${agent.z_dim}
@@ -49,14 +55,18 @@ agent:
     z_dim: ${agent.z_dim}
     a_dim: ${agent.a_dim}
     obs_dim: ${agent.obs_dim}
+    device: ${agent.device}
     hidden_dim: 20
+    num_GRU_layers: ${agent.state_depth}
 
   grounding_wm:
     h_dim: ${agent.h_dim}
     z_dim: ${agent.z_dim}
     a_dim: ${agent.a_dim}
     obs_dim: ${agent.obs_dim}
+    device: ${agent.device}
     hidden_dim: 20
+    num_GRU_layers: ${agent.state_depth}
 
   action_head:
     x_dim: ${agent.h_dim}

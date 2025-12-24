@@ -69,14 +69,13 @@ class BaseState(nn.Module, ABC):
         """
         raise NotImplementedError(f"{type(self)} does not implement compute_energy().")
     
-    @abstractmethod
     def raw(self):
         """
         entirely for describing the self as some kind of 'raw' datatype.
         the semantics of what is raw depends on the class, hence the requirement.
         however, it can be useful to think of it as some 'default' datatype or form of the data within
         """
-        ...
+        raise NotImplementedError(f"{type(self)} does not implement raw().")
 
     @staticmethod
     def _set_nested_attr(root: nn.Module, name: str, value):

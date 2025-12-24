@@ -16,11 +16,11 @@ import time
 
 import numpy as np
 import torch
+from omegaconf.dictconfig import DictConfig
 from torch import distributions as torchd
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.tensorboard import SummaryWriter
-from omegaconf.dictconfig import DictConfig
 
 to_np = lambda x: x.detach().cpu().numpy()
 
@@ -31,7 +31,6 @@ def nmmo_agent_check_config(agent_config: DictConfig):
     assert isinstance(agent_config.history, int)
     assert isinstance(agent_config.batch_size, int)
     assert isinstance(agent_config.state_depth, int)
-    assert isinstance(agent_config.h_dim, int)
     assert isinstance(agent_config.z_dim, int)
 
 

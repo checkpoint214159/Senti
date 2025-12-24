@@ -24,9 +24,14 @@ from Senti.modules.dataclasses.normal import Normal
 from Senti.modules.dataclasses.pomdpstate import POMDPState
 from Senti.modules.optim.dist_loss import DistributionLosses
 from Senti.modules.optim.optimregistry import OptimRegistry
-from Senti.modules.utils.caches import Cache, StateTimestepCache, TensorCache
+from Senti.modules.utils.caches import (
+    Cache,
+    StateCache,
+    StateTimestepCache,
+    TensorCache,
+)
 from Senti.modules.utils.utils import nmmo_agent_check_config
-from Senti.registry import AUTOENCODERS, WORLDMODELS
+from Senti.registry import AUTOENCODERS, DECODERS, WORLDMODELS
 
 OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {}))
 
@@ -90,18 +95,18 @@ class Agent(nn.Module):
         self.inference_steps = self.config.inference_steps
         self.param_learning_steps = self.config.param_learning_steps
         self.planning_horizon = self.config.planning_horizon
-        nmmo_agent_check_config(self.config)
+        # nmmo_agent_check_config(self.config)
         
         # observations and states cache.
         self.states_cache = StateTimestepCache(value_type=POMDPState)
         self.observation_cache = Cache(value_type=dict)
-        self.latent_observation_cache = StateTimestepCache(value_type=Normal)
+        self.latent_observation_cache = TensorCache()
         self.action_cache = TensorCache()
         self.latent_action_cache = TensorCache()
 
         # dimensionality and tensor shapes
         self.state_depth = self.config.state_depth
-        self.a_dim = self.z_dim  # TODO move to action head
+        self.a_dim = self.config.a_dim  # TODO move to action head
 
         # other non-model modules
         self.loss_module = DistributionLosses()
@@ -110,7 +115,6 @@ class Agent(nn.Module):
         # encoder to encode incoming observation(s)
         self.obs_autoencoder = AUTOENCODERS.build("NmmoObsAE", config.NmmoObsAE)
         logging.info("Successfully loaded NmmoAE")
-        self.z_ae = AUTOENCODERS.build("zAE", config.zAE)
 
         # maps latent observation to state, for now only takes latent obs of image
         self.transition_model = WORLDMODELS.build("RSSM", config.transition_model)
@@ -118,6 +122,8 @@ class Agent(nn.Module):
 
         self.grounding_wm = WORLDMODELS.build("RSSM", config.grounding_wm)
         logging.info("Successfully loaded grounding_wm")
+
+        self.zh_o = DECODERS.build("LatentObsDecoder", config.zh_o)
 
         self.policy = Normal(
             z_mean_shape=(self.config.preferences_dim,),
@@ -127,7 +133,8 @@ class Agent(nn.Module):
         # optimization
         inference_params = (
             list(self.obs_autoencoder.parameters()) + 
-            list(self.transition_model.parameters())
+            list(self.transition_model.parameters()) +
+            list(self.zh_o.parameters())
         )
         kwargs = dict(lr=0.005)
         self.optimizer_registry.register_optim(
@@ -149,6 +156,12 @@ class Agent(nn.Module):
         # world models, but it also makes sense because it predicts h_t+1 and z_t+2, which we can save into
         # a statenode once more.
         self.atomic_window = range(self.atomic_count - self.history, self.atomic_count)
+        
+        self.timestep_conv = nn.Conv1d(
+            in_channels=self.atomic_timestep,
+            out_channels=1,
+            kernel_size=1
+        )
 
         self.to(self.device)
 
@@ -160,7 +173,7 @@ class Agent(nn.Module):
             'transition_model': self.transition_model,
             'grounding_wm': self.grounding_wm,
             'obs_autoencoder': self.obs_autoencoder,
-            'z_ae': self.z_ae
+            'zh_o': self.zh_o,
         })
 
         return morphology.state_dict()
@@ -171,19 +184,19 @@ class Agent(nn.Module):
             'log_std': self.policy.log_std
         }
 
-    def initialize_state_node(self, atomic_t: int):
+    def initialize_state_node(self, atomic_t: int, obs: torch.Tensor):
         a = self.empty_action_init()  # FOR NOW
         if atomic_t == 1:
-            h = self.transition_model.initial_h()  # TODO this could be learned?
-            # a = self.empty_action_init()
+            h = self.transition_model.initial_h(
+               self.batch_size,  self.state_depth, 
+            )  # TODO this could be learned?
      
         else:
             # calculate next h using previous state
             state = self.states_cache.get(atomic_t - 1)
             h = self.transition_model.forward_h(state)
-            # a, h = s.get('a'), s.get('h')
 
-        z = self.forward_z(h, o_embed_t=None)  # generate prior for z here
+        z = self.transition_model.forward_z(h, o_embed_t=obs)  # generate initial posterior
    
         self.states_cache.add(atomic_t, POMDPState(
             h=h,
@@ -203,9 +216,12 @@ class Agent(nn.Module):
             agent_embed_normal, others = self.obs_autoencoder.encode(o)
             obs.append(agent_embed_normal)
 
-        stacked = type(obs[0]).concat_timesteps(obs)
+        stacked = torch.stack(obs, -2)
+        print('stacked shapes?', stacked.shape)
+        atomic = self.timestep_conv(stacked)
+        print('atomic shape?', atomic.shape)
         self.latent_observation_cache.add(
-                atomic_num, stacked.to(self.device))
+                atomic_num, atomic.to(self.device))
         
 
     def update_states_cache(self):
@@ -214,8 +230,8 @@ class Agent(nn.Module):
         """
         for atomic_t in self.latent_observation_cache.keys():
             if not self.states_cache.has(atomic_t):
-                # obs: Normal = self.latent_observation_cache.get(atomic_t)
-                self.initialize_state_node(atomic_t)
+                obs: torch.Tensor = self.latent_observation_cache.get(atomic_t)
+                self.initialize_state_node(atomic_t, obs)
                 
 
     def belief_optim_wrap(self):
@@ -292,25 +308,30 @@ class Agent(nn.Module):
             if step == 0:  # first step, percieve for latest prior and wrap in optim
                 self.update_states_cache()
                 self.belief_optim_wrap()
-                P_states = self.states_cache.replica(detach=True, freeze=True)
+                # P_states = self.states_cache.replica(detach=True, freeze=True)
 
             # random timestep group selection, to run inference on
             timestep = random.choice(list(self.states_cache.keys()))
             print('-----------Selected atomic timestep---------------', timestep)
-            self.inference_step(timestep, P_states, backprop_belief=True)  # lr scheduling comes later. test first
-            P_states = P_states.replica(detach=True, freeze=True)
-            self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
+            self.inference_step(timestep,
+                # P_states,
+                backprop_belief=True)  # lr scheduling comes later. test first
+
+            # P_states = P_states.replica(detach=True, freeze=True)
+            self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
+            # self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
             # every 'param_learning_steps', do param learning (backprop_belief=False)
-            if step % param_learning_steps == 0:
+            if step % param_learning_steps == 0 and step != 0:
                 total_vfe = sum(
                     self.inference_step(
                         timestep=t,
-                        P_states=P_states,
+                        # P_states=P_states,
                         backprop_belief=False
                     ) for t in self.states_cache.keys()
                 )
-                P_states = P_states.replica(detach=True, freeze=True)
-                self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
+                # P_states = P_states.replica(detach=True, freeze=True)
+                # self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
+                self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
                 print(f"[Step {step}] VFE = {total_vfe:.6f}") if print_statements else None
 
                 self.optimizer_registry.do_step(
@@ -323,7 +344,7 @@ class Agent(nn.Module):
     def inference_step(
             self,
             timestep,
-            P_states,
+            # P_states,
             backprop_belief=False
         ):
         """
@@ -334,42 +355,31 @@ class Agent(nn.Module):
             P_states: Dict of Ph_t 
             backprop_belief: Boolean on whether or not to call belief optimizer.
         """
-        qs_t = self.states_cache.get(timestep)
-        qs_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None  # imperative and breaks responsibility but very verbose and clear
-        qs_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None  # especially considering this whole function is quite noisy
-        ps_t = P_states.get(timestep)
-        print('------------IN ATOMIC TIMESTEP------------', timestep)
-        qh_t = qs_t.get('h')
-        ph_t = ps_t.get('h')
-        qz_t = qs_t.get('z')
-        pz_t = ps_t.get('z')
-        print('qz_t before?', qz_t.mean)
-        print('qh_t before?', qh_t.mean)
-        # self.loss_module.include(
-        #     ('qh_t vs ph_t', self.loss_module.kl,
-        #     qh_t, ph_t))
+        s_t = self.states_cache.get(timestep)
+        s_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None  # imperative and breaks responsibility but very verbose and clear
+        s_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None  # especially considering this whole function is quite noisy
+
+        # p(z_t | h_t) kl q(z_t | h_t, o_t)
+        h_t = s_t.get('h')
+        pz_t = self.transition_model.forward_z(h_t)
+        qz_t = s_t.get('z')
         self.loss_module.include(
             ('qz_t vs pz_t', self.loss_module.kl,
             qz_t, pz_t))
 
-        # TODO generalize this to different prior/would-be prior calculating functions
-        # -------- prior from t-1 -------- 
-        if qs_tm1 is not None:
-            ps_t_from_tm1 = self.transition_model(qs_tm1)
-            pz_t_from_tm1, ph_t_from_tm1 = ps_t_from_tm1.get('z'), ps_t_from_tm1.get('h')
-            # TODO: FIX THIS VERBOSITY
+        # -------- how well does posterior from t-1 predict posterior of t -------- 
+        if s_tm1 is not None:
+            ph_t_from_tm1 = self.transition_model.forward_h(s_tm1)
+            pz_t_from_tm1 = self.transition_model.forward_z(ph_t_from_tm1)
             self.loss_module.include(
                 ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
                 qz_t, pz_t_from_tm1))
 
         # -------- would-be h-prior at t+1 under current belief -------- 
-        if qs_tp1 is not None:
-            # print('qs_tp1.mean?', qs_tp1.get('h').mean)
-            ps_at_tp1 = self.transition_model(qs_t)
-            pz_at_tp1, ph_at_tp1 = ps_at_tp1.get('z'), ps_at_tp1.get('h')
-            qh_tp1 = qs_tp1.get('h')
-            qz_tp1 = qs_tp1.get('z')
-            # TODO: FIX THIS VERBOSITY
+        if s_tp1 is not None:
+            qz_tp1 = s_tp1.get('z')
+            ph_at_tp1 = self.transition_model.forward_h(s_t)
+            pz_at_tp1 = self.transition_model.forward_z(ph_at_tp1)
             self.loss_module.include(
                 ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,  # TODO: better naming convention here??
                 qz_tp1, pz_at_tp1),
@@ -377,14 +387,15 @@ class Agent(nn.Module):
         states_energy = self.loss_module.compute()
 
         # message from obs
-        qz_t = qs_t.get('z')
-        lat_o_pred = self.z_ae.decode(qz_t)
-        lat_o_true = self.latent_observation_cache.get(timestep)
-        self.loss_module.include(
-            ('decode loss', self.loss_module.log_likelihood,
-             lat_o_true, lat_o_pred.mean),  # TODO bad practice to .mean here. NOTE: LEARN VARIANCE BOOKMARK HERE
-        )
-        obs_negative_log = self.loss_module.compute()
+        qz_t, qh_t = s_t.get('z'), s_t.get('h')
+        lat_o_pred = self.zh_o(qz_t, qh_t)
+        print('data of lat obs cache', self.latent_observation_cache._data)
+        lat_o = self.latent_observation_cache.get(timestep)
+        # self.loss_module.include(
+        #     ('decode loss', self.loss_module.MSE,
+        #      lat_o, lat_o_pred),
+        # )
+        obs_negative_log = self.loss_module.MSE(lat_o, lat_o_pred)
         
         total_energy = states_energy - obs_negative_log
 
@@ -393,8 +404,8 @@ class Agent(nn.Module):
                 key='states_cache',
                 loss=total_energy
             )
-        print('qz_t after?', qz_t.mean)
-        print('qh_t after?', qh_t.mean)
+        # print('qz_t after?', qz_t.mean)
+        # print('qh_t after?', qh_t.mean)
         return total_energy
 
     def ground_wm(self):
@@ -503,8 +514,8 @@ class Agent(nn.Module):
     def empty_action_init(self):
         """helper method to lazily create empty a dim"""
         return Normal(
-            z_mean_shape=(self.batch_size, self.atomic_timestep, self.a_dim,), 
-            z_log_std_shape=(self.batch_size, self.atomic_timestep, self.a_dim,)
+            z_mean_shape=(self.batch_size, self.state_depth, self.a_dim,), 
+            z_log_std_shape=(self.batch_size, self.state_depth, self.a_dim,)
         )
 
 

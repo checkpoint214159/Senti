@@ -187,3 +187,8 @@ a: Action.
 
 
 We will now use RSSM instead of the stupid wm from openai. thanks openai
+
+
+# 24/12/2025 Conv1d
+
+Merry Christmas Eve! I will use nn.Conv1d to squash down the timestep dimension from [B, T, E] tp [B, E], which makes it easier to operate on our GRU cells, and also makes it cleaner if we will operate at variable timesteps (so each level of timesteps, will have its own conv that aggregates whatever T is to 1, then we unsqueeze that dim)

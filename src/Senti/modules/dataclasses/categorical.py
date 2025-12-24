@@ -19,7 +19,6 @@ class GroupedCategoricalState(BaseState):
         """
         factory method, provide groups and classes so we can view it
         """
-        # Calculate batch dimensions (handles multi-dim batches like [B, T])
         batch_dims = flat_logits.shape[:-1] 
         reshaped = flat_logits.view(*batch_dims, num_groups, num_classes)
         return cls(reshaped)
@@ -44,8 +43,10 @@ class GroupedCategoricalState(BaseState):
         optionally pass in argument to sample
         """
         if use_sample:
-            return self.sample().reshape(self.logits.shape[0], -1)
-        return self.logits.reshape(self.logits.shape[0], -1)
+            x = self.sample()
+        else:
+            x = torch.softmax(self.logits, dim=-1)
+        return x.flatten(start_dim=-2)
 
     def raw(self):
         return torch.argmax(self.logits, dim=-1)

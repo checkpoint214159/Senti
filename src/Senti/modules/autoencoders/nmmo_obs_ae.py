@@ -28,7 +28,7 @@ class NmmoObsAE(BaseAutoEncoder):
         agent_embeddings, my_agent_embeddings = self.encoder(data)
         # force as normal for now
         # NOTE: LEARN VARIANCE BOOKMARK HERE
-        return Normal.from_value(agent_embeddings), my_agent_embeddings
+        return agent_embeddings, my_agent_embeddings
 
     def decode(self, data):
         # TODO figure out the decoder version of this later.

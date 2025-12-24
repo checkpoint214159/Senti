@@ -142,11 +142,11 @@ class TensorCache(TensorMixin, Cache):
         """
         Creates a clone, optionally with detach kwarg.
         """
-        new = copy.deepcopy(self)
+        new = self.__class__()
         if detach:
-            new._data = {k: v.detach() for k, v in new._data.items()}
+            new._data = {k: v.detach() for k, v in self._data.items()}
         else:
-            new._data = {k: v.clone() for k, v in new._data.items()}
+            new._data = {k: v.clone() for k, v in self._data.items()}
         return new
 
 

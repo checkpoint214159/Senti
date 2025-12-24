@@ -35,10 +35,25 @@ class BaseNormal(BaseState):
     concat with others, etc etc.
     In short the main idea here was to treat this object like a nn.Module, with some
     of the functionality like concat
-    TODO im starting to feel like this is an overly complicated wrapper
+    
+    a crucial piece of data is the posterior boolean we pass in. This allows BaseNormal to
+    take on three forms: is_posterior=True, is_posterior=False, is_posterior=None.
+    The value of the first two is that we sometimes only conduct operations of certain semantics
+    of it being a posterior or prior belief. However if you want to circumvent that entirely
+    it can be left as none.
     """
-    def __init__(self):
+    def __init__(self,
+        is_posterior: bool | None = None):
         super().__init__()
+        assert isinstance(is_posterior, bool) or is_posterior is None, 'Assertion failed. is_posterior argument passed '\
+            'to BaseNormal is neither boolean nor None.'
+        self._is_posterior = is_posterior
+
+    @property
+    def is_posterior(self):
+        if self._is_posterior is None:
+            return False
+        return self._is_posterior
     
     @property
     @abstractmethod
@@ -93,8 +108,9 @@ class Normal(BaseNormal):
         z_log_std: torch.Tensor | None = None,
         z_log_std_shape: tuple[int] | None = None,
         log_std_init: int = 1,
+        **kwargs
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         cls = self.__class__.__name__
 
         z_init = dim_or_value_init(
@@ -202,6 +218,7 @@ class DepthNormal(Generic[T], BaseNormal):
         depth: int,
         values: List[T],
         stateclass: Type[T],
+        **kwargs,
     ):
         """
         the intent for this class, is for each value to have the same shape
@@ -214,7 +231,7 @@ class DepthNormal(Generic[T], BaseNormal):
         of course python isnt strictly typed, but if you are reading this
         you cant blame me for not trying to be clear
         """
-        super().__init__()
+        super().__init__(**kwargs)
         cls = self.__class__.__name__
         assert len(values) == depth, f"{cls}: Assertion failed. Passed in list of values not equal to" \
             f"depth. Depth is {depth} len values is {len(values)}"

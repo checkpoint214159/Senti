@@ -54,4 +54,11 @@ class DistributionLosses(BaseLoss):
             'DistributionLosses: Assertion failed. x_true is not in valid types.'
 
         return x_true.as_distribution.log_prob(x_pred).sum()
+    
+    def MSE(
+        self,
+        pred: torch.Tensor,
+        true: torch.Tensor,
+    ):
         
+        return ((true - pred) ** 2).sum()

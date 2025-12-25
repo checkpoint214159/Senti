@@ -88,8 +88,9 @@ class RSSM(nn.Module):
         prev_h = prev_h.squeeze(1)  # [B, h_emb]
         prev_h = prev_h.unsqueeze(0).repeat(self.num_GRU_layers, 1, 1)  # adds layer, [N, B, h_emb]
         output, h_t = self.recurrent_core(x, prev_h)  # output: [B, L, D*h_emb], h: [D*N, B, h_emb]
-        # we wont use h_t since its mostly just a seed.
-        return GroupedCategoricalState.from_flat_logits(output, G, C).to(self.device)
+
+        return GroupedCategoricalState.from_flat_logits(output, G, C).to(self.device), \
+            GroupedCategoricalState.from_flat_logits(h_t, G, C).to(self.device)
 
     def forward_z(self, h_t: GroupedCategoricalState, o_embed_t:torch.Tensor | None = None) -> Normal:
         """
@@ -107,5 +108,7 @@ class RSSM(nn.Module):
         else:
             z = self.z_given_h(h_t.as_tensor())
         return self.wrap_z(z, is_posterior)
+    
+    
     
 

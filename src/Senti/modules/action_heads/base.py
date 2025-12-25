@@ -26,5 +26,3 @@ class BaseActionHead(ABC, nn.Module):
         super().__init__()
         self.x_dim = config.x_dim
         self.a_dim = config.a_dim
-
-    

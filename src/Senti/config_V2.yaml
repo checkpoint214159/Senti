@@ -74,6 +74,10 @@ agent:
     gene_dim: ${agent.preferences_dim}
     policy_dim: ${agent.policy_dim}
 
+  pref:
+    h_dim: ${agent.h_dim}
+    z_dim: ${agent.z_dim}
+
 
 
   

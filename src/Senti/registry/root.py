@@ -14,3 +14,5 @@ ACTION_HEADS = Registry('action_heads')
 GENOME = Registry('genome')
 
 SELECTOR = Registry('selector')
+
+PREFERENCES = Registry('preferences')

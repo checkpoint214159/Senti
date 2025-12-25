@@ -31,7 +31,7 @@ from Senti.modules.utils.caches import (
     TensorCache,
 )
 from Senti.modules.utils.utils import nmmo_agent_check_config
-from Senti.registry import AUTOENCODERS, DECODERS, WORLDMODELS
+from Senti.registry import AUTOENCODERS, DECODERS, PREFERENCES, WORLDMODELS
 
 OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {}))
 
@@ -95,6 +95,7 @@ class Agent(nn.Module):
         self.inference_steps = self.config.inference_steps
         self.param_learning_steps = self.config.param_learning_steps
         self.planning_horizon = self.config.planning_horizon
+        self.n_policies = self.config.n_policies
         # nmmo_agent_check_config(self.config)
         
         # observations and states cache.
@@ -124,7 +125,13 @@ class Agent(nn.Module):
         logging.info("Successfully loaded grounding_wm")
 
         self.zh_o = DECODERS.build("LatentObsDecoder", config.zh_o)
+        self.preference_head = PREFERENCES.build("BasePreferenceHead", config.pref)
 
+        self.preferences = Normal(
+            z_mean_shape=(self.config.preferences_dim,),
+            z_log_std_shape=(self.config.preferences_dim,)
+        )
+        # TODO make this genome conditioned. Until then treat it as a random init normal
         self.policy = Normal(
             z_mean_shape=(self.config.preferences_dim,),
             z_log_std_shape=(self.config.preferences_dim,)
@@ -141,11 +148,16 @@ class Agent(nn.Module):
             'inference', inference_params, **kwargs
         )
 
-        wm_params = list(self.grounding_wm.parameters())
+        wm_params = (
+            list(self.grounding_wm.parameters()) +
+            list(self.preference_head.parameters())
+        )
         kwargs = dict(lr=0.005)
         self.optimizer_registry.register_optim(
             'wm', wm_params, **kwargs
         )
+
+        # 
 
         self.atomic_timestep = config.atomic_timestep
         self.discrete_step = config.discrete_step
@@ -180,10 +192,10 @@ class Agent(nn.Module):
 
         return morphology.state_dict()
     
-    def expose_policy(self) -> dict:
+    def expose_pref(self) -> dict:
         return {
-            'mean': self.policy.mean,
-            'log_std': self.policy.log_std
+            'mean': self.preferences.mean,
+            'log_std': self.preferences.log_std
         }
 
     def initialize_state_node(self, atomic_t: int, obs: torch.Tensor):
@@ -413,37 +425,36 @@ class Agent(nn.Module):
         """
         # format x
         print('-----------------GROUNDING WM STEP-----------------')
-        a_beliefs = self.states_cache \
+        all_a = self.states_cache \
             .vmap(lambda s: s.get('a')) \
             .values()
-        z_beliefs = self.states_cache \
+        all_z = self.states_cache \
             .vmap(lambda s: s.get('z')) \
             .values()
-        h_beliefs = self.states_cache \
+        all_h = self.states_cache \
             .vmap(lambda s: s.get('h')) \
             .values()
         
-        z = type(z_beliefs[0]).concat(z_beliefs, 1).map(lambda z: z[:, 1:])  # exclude the first state
-        a = type(a_beliefs[0]).concat(a_beliefs, 1).map(lambda a: a[:, 1:])
-        seed_h = h_beliefs[0]
+        all_z = type(all_z[0]).concat(all_z, 1)
+        z = all_z.map(lambda z: z[:, :-1])  # exclude the final state when passing to wm
+        ground_z = all_z.map(lambda z: z[:, 1:])  # get all except first state
+
+        all_a = type(all_a[0]).concat(all_a, 1)
+        a = all_a.map(lambda a: a[:, :-1])
+        ground_a = all_a.map(lambda a: a[:, 1:])
+        seed_h = all_h[0]
         seed_state = POMDPState(
             h=seed_h,
             z=z,  # [B, L-1, z_emb]
             a=a,  # [B, L-1, a_emb]
         )
-        pred_h = self.grounding_wm.forward_h(seed_state) # [B, L-1, h_emb]
+        pred_h, _ = self.grounding_wm.forward_h(seed_state) # [B, L-1, h_emb]
         pred_z = self.grounding_wm.forward_z(pred_h)  # only based off h, no obs [B, L-1, z_emb]
-        print('pred_z.shape?', pred_z.shape)
-        print('z shape?', z.shape)
- 
-        # z_beliefs = type(z_beliefs[0]).concat(z_beliefs, 1) \
-        #     .map(lambda z: z[:, 1:])  # exclude the first posterior belief, since we arent predicting for that
-    
-        # print('z beliefs?', z_beliefs.shape)
-        # correct wm to accurately predict our beliefs.
+
+        # correct wm to accurately predict our beliefs, based only off h.
         self.loss_module.include(
             ('wm_grounding', self.loss_module.kl, 
-            pred_z, z),
+            pred_z, ground_z),
         )
 
         grounding_loss = self.loss_module.compute()
@@ -457,24 +468,49 @@ class Agent(nn.Module):
 
     # def load_genome(self):
 
-    
     def planning(
+        self,
+    ):
+        """
+        do planning: sample n policies, run rollout function with it.
+        Repeat this until EFE converges or we run out of steps
+
+        Then, use this updated policy to predict action
+        Use an affine transformation to augment the pre-sampling policy
+        """
+        efe = 0
+        
+        for _ in range(self.n_policies):
+            pi = self.policy.sample()
+            efe += self.rollout(pi)
+
+        
+
+    
+    def rollout(
             self,
+            policy,
         ):
         """
+        Using the grounding wm as our prior, sample various policies and derive EFE for each one from rollouts
         """
-        # create planning priors
-        # s = self.states_cache.get_latest(1) \
-        #     .values()[0]
-        # prior_s = [s]
-        # for _ in range(self.planning_horizon):
-        #     s = self.grounding_wm(s)
-        #     prior_s.append(s)
+        # create planning priors from wm.
+        seed_s = self.states_cache.get(self.atomic_count)
+        rollout = [seed_s]
+
+        for _ in range(self.planning_horizon):
+            _, seed_h = self.ground_wm.forward_h(seed_s)
+            seed_z = self.ground_wm.forward_z(seed_h)
+            # TODO planning action here
+            seed_a = self.empty_action_init()
+            seed_s = POMDPState(
+                h=seed_h,
+                z=seed_z,
+                a=seed_a,
+            )
+            rollout.append(seed_s)
 
 
-        
-        # print('prior_s?', [(s.mean('h'), s.mean('z'), s.mean('a')) for s in prior_s])
-        
     
     def prune(self):
         """

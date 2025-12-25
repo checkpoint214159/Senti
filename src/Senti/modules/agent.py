@@ -105,7 +105,7 @@ class Agent(nn.Module):
         self.latent_action_cache = TensorCache()
 
         # dimensionality and tensor shapes
-        self.state_depth = self.config.state_depth
+        # self.state_depth = self.config.state_depth
         self.a_dim = self.config.a_dim  # TODO move to action head
 
         # other non-model modules
@@ -161,7 +161,9 @@ class Agent(nn.Module):
             in_channels=self.atomic_timestep,
             out_channels=1,
             kernel_size=1
-        )
+        )  # to aggregate across observational timesteps into one singular timestep 
+        
+
 
         self.to(self.device)
 
@@ -188,7 +190,7 @@ class Agent(nn.Module):
         a = self.empty_action_init()  # FOR NOW
         if atomic_t == 1:
             h = self.transition_model.initial_h(
-               self.batch_size,  self.state_depth, 
+                self.batch_size, 1  # magic number 1. i am so cooked. this is to represent timestep
             )  # TODO this could be learned?
      
         else:
@@ -217,9 +219,7 @@ class Agent(nn.Module):
             obs.append(agent_embed_normal)
 
         stacked = torch.stack(obs, -2)
-        print('stacked shapes?', stacked.shape)
         atomic = self.timestep_conv(stacked)
-        print('atomic shape?', atomic.shape)
         self.latent_observation_cache.add(
                 atomic_num, atomic.to(self.device))
         
@@ -275,7 +275,7 @@ class Agent(nn.Module):
                     self.inference_steps,
                     self.param_learning_steps,
                 )
-                # self.ground_wm()
+                self.ground_wm()
 
                 self.planning()
         # 6 - 9:
@@ -387,35 +387,32 @@ class Agent(nn.Module):
         states_energy = self.loss_module.compute()
 
         # message from obs
-        qz_t, qh_t = s_t.get('z'), s_t.get('h')
+        qz_t, qh_t = s_t.get('z').sample(), s_t.get('h').as_tensor()
         lat_o_pred = self.zh_o(qz_t, qh_t)
-        print('data of lat obs cache', self.latent_observation_cache._data)
         lat_o = self.latent_observation_cache.get(timestep)
-        # self.loss_module.include(
-        #     ('decode loss', self.loss_module.MSE,
-        #      lat_o, lat_o_pred),
-        # )
-        obs_negative_log = self.loss_module.MSE(lat_o, lat_o_pred)
+
+        obs_MSE = self.loss_module.MSE(lat_o, lat_o_pred)  # positive equivalent for NLL if latent obs
+        # was a variational belief. but it isnt, its just some tensors
+        # it should help to update zh_o and qz_t and qh_t though
         
-        total_energy = states_energy - obs_negative_log
+        total_energy = states_energy + obs_MSE
 
         if backprop_belief:
             self.optimizer_registry.do_step(
                 key='states_cache',
                 loss=total_energy
             )
-        # print('qz_t after?', qz_t.mean)
-        # print('qh_t after?', qh_t.mean)
+
         return total_energy
 
     def ground_wm(self):
         """
         Updates predictive WM to bootstrap it to transition model.
-        for information as to whats really going on, see the update notes.
+        Since during planning we operate entirely within imagination space, no observation semantics
+        can be spotted here
         """
         # format x
         print('-----------------GROUNDING WM STEP-----------------')
-        pred_z = []
         a_beliefs = self.states_cache \
             .vmap(lambda s: s.get('a')) \
             .values()
@@ -426,32 +423,27 @@ class Agent(nn.Module):
             .vmap(lambda s: s.get('h')) \
             .values()
         
-        z = z_beliefs[0]
-        h = h_beliefs[0]
-        a = self.empty_action_init()
-        for _ in z_beliefs:
-            h, z, a = self.grounding_wm.forward_hza(h, z, a)
-            pred_z.append(z)
-
-        pred_z = type(pred_z[0]).concat(pred_z, 1) \
-            .map(lambda x:
-                x[:, :-self.atomic_timestep])  # exclude the final predicted z, as we dont have a belief for z at t+1
-        z_beliefs = type(z_beliefs[0]).concat(z_beliefs, 1) \
-            .map(lambda x:
-                x[:, self.atomic_timestep:,]) # exclude the first belief z, which we do not predict for
-        
-        pred_h = h.map(lambda x:
-            x[:, self.atomic_timestep:,]) # exclude the first state, which should still be in this state history
-        h_beliefs = type(h_beliefs[0]).concat(h_beliefs, 1)
-
+        z = type(z_beliefs[0]).concat(z_beliefs, 1).map(lambda z: z[:, 1:])  # exclude the first state
+        a = type(a_beliefs[0]).concat(a_beliefs, 1).map(lambda a: a[:, 1:])
+        seed_h = h_beliefs[0]
+        seed_state = POMDPState(
+            h=seed_h,
+            z=z,  # [B, L-1, z_emb]
+            a=a,  # [B, L-1, a_emb]
+        )
+        pred_h = self.grounding_wm.forward_h(seed_state) # [B, L-1, h_emb]
+        pred_z = self.grounding_wm.forward_z(pred_h)  # only based off h, no obs [B, L-1, z_emb]
+        print('pred_z.shape?', pred_z.shape)
+        print('z shape?', z.shape)
+ 
+        # z_beliefs = type(z_beliefs[0]).concat(z_beliefs, 1) \
+        #     .map(lambda z: z[:, 1:])  # exclude the first posterior belief, since we arent predicting for that
+    
+        # print('z beliefs?', z_beliefs.shape)
         # correct wm to accurately predict our beliefs.
         self.loss_module.include(
             ('wm_grounding', self.loss_module.kl, 
-            pred_h, h_beliefs),
-        )
-        self.loss_module.include(
-            ('wm_grounding', self.loss_module.kl, 
-            pred_z, z_beliefs),
+            pred_z, z),
         )
 
         grounding_loss = self.loss_module.compute()
@@ -512,10 +504,11 @@ class Agent(nn.Module):
 
 
     def empty_action_init(self):
-        """helper method to lazily create empty a dim"""
+        """helper method to lazily create empty a."""
         return Normal(
-            z_mean_shape=(self.batch_size, self.state_depth, self.a_dim,), 
-            z_log_std_shape=(self.batch_size, self.state_depth, self.a_dim,)
+            z_mean_shape=(self.batch_size, 1, self.a_dim,),  # TODO fix the magic number. it really is supposed to be 1,
+            # to represent the singular atomic timestep, but this is horrible practice.
+            z_log_std_shape=(self.batch_size, 1, self.a_dim,)
         )
 
 

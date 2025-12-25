@@ -26,8 +26,6 @@ class LatentObsDecoder(nn.Module):
             nn.Linear(self.hidden, self.obs_dim) # 2x for mean and std
         )
 
-    def forward(self, z:Normal, h:GroupedCategoricalState):
-        z = z.sample()
-        h = h.as_tensor(use_sample=True)
+    def forward(self, z:torch.Tensor, h:torch.Tensor):
         zh = torch.concat([z, h], dim=-1)
         return self.zh_o(zh)

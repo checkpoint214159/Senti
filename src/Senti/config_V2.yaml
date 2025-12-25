@@ -13,7 +13,7 @@ agent:
   z_dim: 8
   a_dim: 8
   obs_dim: 10
-  state_depth: 1
+  state_depth: 3
   device: cuda
   batch_size: ${env.PLAYER_N}
   inference_steps: 25

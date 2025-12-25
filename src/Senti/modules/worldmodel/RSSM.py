@@ -10,7 +10,12 @@ from Senti.registry import WORLDMODELS
 
 @WORLDMODELS.register_module()
 class RSSM(nn.Module):
-    def __init__(self, config: DictConfig):
+    def __init__(self,
+            config: DictConfig):
+        """
+        special h_aggregator module (handled externally) that helps us aggregate from
+        [B, D, E] into [B, E], basically across depths.
+        """
         super().__init__()
 
         self.z_dim = config.z_dim
@@ -21,10 +26,12 @@ class RSSM(nn.Module):
         self.hidden = config.hidden_dim
         self.device = config.device
         self.num_GRU_layers = config.num_GRU_layers
+        self.h_groups, self.h_classes = self.h_dim[-2], self.h_dim[-1]
         
         self.recurrent_core = nn.GRU(self.z_dim + self.a_dim,
             self.flattened_h,
             num_layers=self.num_GRU_layers,
+            batch_first=True
         )
 
         self.z_given_h = nn.Sequential(
@@ -45,12 +52,11 @@ class RSSM(nn.Module):
         """
         todo: enable it to be learned? i dont see the point though
         """
-        G, C = self.h_dim[-2], self.h_dim[-1]
+        G, C = self.h_groups, self.h_classes
         dims = dims + (G, C)
-        print('dims in initial_h?', dims)
         h_t = torch.zeros(dims, device=self.device)
         return GroupedCategoricalState(h_t)
-
+    
 
     def wrap_z(self, z_mean_logstd, is_posterior=None) -> Normal:
         """wraps z in our normal"""
@@ -66,14 +72,24 @@ class RSSM(nn.Module):
     def forward_h(self, state:POMDPState) -> GroupedCategoricalState:
         """
         h_t = f(h_{t-1}, z_{t-1}, a_{t-1})
+        
+        notation:
+        B = batch size
+        L = sequence length
+        D = 2 if bidirectional=True, 1 otherwise. SHould always be 1 TODO lazy to account for this now
+        N = num_layers
         """
+        G, C = self.h_groups, self.h_classes
         prev_z, prev_a, prev_h = state.get('z'), state.get('a'), state.get('h')
         z, a = prev_z.sample(), prev_a.sample()
-        x = torch.cat([z, a], dim=-1)
-        output, h_t = self.recurrent_core(x, prev_h.as_tensor())
-        print('h_t out?', h_t.shape)
-        G, C = self.h_dim[-2], self.h_dim[-1]
-        return GroupedCategoricalState.from_flat_logits(h_t, G, C).to(self.device)
+        x = torch.cat([z, a], dim=-1)  # [B, L, az_emb]
+        prev_h = prev_h.as_tensor()  # [B, T, h_emb]. T SHOULD be 1 here.
+        assert prev_h.shape[1] == 1, 'Assertion failed. T should be 1 only, since it is the seed'
+        prev_h = prev_h.squeeze(1)  # [B, h_emb]
+        prev_h = prev_h.unsqueeze(0).repeat(self.num_GRU_layers, 1, 1)  # adds layer, [N, B, h_emb]
+        output, h_t = self.recurrent_core(x, prev_h)  # output: [B, L, D*h_emb], h: [D*N, B, h_emb]
+        # we wont use h_t since its mostly just a seed.
+        return GroupedCategoricalState.from_flat_logits(output, G, C).to(self.device)
 
     def forward_z(self, h_t: GroupedCategoricalState, o_embed_t:torch.Tensor | None = None) -> Normal:
         """
@@ -81,11 +97,12 @@ class RSSM(nn.Module):
         Still accept the whole POMDPState as an argument, to keep abstraction neat
         """
         is_posterior = False
-        print('h_t.as_tensor() shape', h_t.as_tensor().shape)
         if o_embed_t is not None:
-            print('o_embed_t shape', o_embed_t.shape)
             is_posterior = True
-            x = torch.cat([h_t.as_tensor(), o_embed_t], dim=-1)
+            h_t = h_t.as_tensor()
+            print('h_t shape?', h_t.shape)
+            print('o_embed_t shape?', o_embed_t.shape)
+            x = torch.cat([h_t, o_embed_t], dim=-1)
             z = self.z_given_h_o(x)
         else:
             z = self.z_given_h(h_t.as_tensor())

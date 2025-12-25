@@ -185,10 +185,18 @@ h: Deterministic state. Predicts z_t, is predicted via h_t = f(h_t-1, z_t-1, a_t
 z: Stochastic 'belief' state. h predicts z via p(z|h) (or also p(z|h, o))
 a: Action.
 
-
 We will now use RSSM instead of the stupid wm from openai. thanks openai
 
 
 # 24/12/2025 Conv1d
 
 Merry Christmas Eve! I will use nn.Conv1d to squash down the timestep dimension from [B, T, E] tp [B, E], which makes it easier to operate on our GRU cells, and also makes it cleaner if we will operate at variable timesteps (so each level of timesteps, will have its own conv that aggregates whatever T is to 1, then we unsqueeze that dim)
+
+
+# 25/12/2025 Preferences and genome
+
+To reiterate, genome is something that is optimized by evolution, and is treated as static and not learned within the agent's lifespan. 
+
+Anyways during planning, since we do not have observations nor rewards to help evaluate the instrumental value of our rollouts / imagined futures, we will use a "preference head", conditioned on h and genome. This spits out a z that we take reference from, which describes a "desired z". This is what we will use to derive instrumental value, which is what we need for EFE calculation
+
+

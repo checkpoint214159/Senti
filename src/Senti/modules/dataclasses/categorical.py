@@ -50,6 +50,9 @@ class GroupedCategoricalState(BaseState):
 
     def raw(self):
         return torch.argmax(self.logits, dim=-1)
+    
+    def entropy(self):
+        return self.as_distribution().entropy()
 
     # def compute_energy(self, other: "GroupedCategoricalState", loss_func=None):
     #     """

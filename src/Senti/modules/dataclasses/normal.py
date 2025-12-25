@@ -91,6 +91,9 @@ class BaseNormal(BaseState):
     
     def as_tensor(self):
         return self.sample()
+    
+    def entropy(self):
+        return self.as_distribution.entropy()
 
 
 class Normal(BaseNormal):

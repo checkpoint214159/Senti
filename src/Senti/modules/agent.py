@@ -31,7 +31,7 @@ from Senti.modules.utils.caches import (
     TensorCache,
 )
 from Senti.modules.utils.utils import nmmo_agent_check_config
-from Senti.registry import AUTOENCODERS, DECODERS, PREFERENCES, WORLDMODELS
+from Senti.registry import AUTOENCODERS, DECODERS, WORLDMODELS
 
 OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {}))
 
@@ -125,12 +125,11 @@ class Agent(nn.Module):
         logging.info("Successfully loaded grounding_wm")
 
         self.zh_o = DECODERS.build("LatentObsDecoder", config.zh_o)
-        self.preference_head = PREFERENCES.build("BasePreferenceHead", config.pref)
+        # self.preference_head = PREFERENCES.build("BasePreferenceHead", config.pref)
 
-        self.preferences = Normal(
-            z_mean_shape=(self.config.preferences_dim,),
-            z_log_std_shape=(self.config.preferences_dim,)
-        )
+        self.genome = torch.randn(
+            1, self.config.preferences_dim,
+        ).unsqueeze(0).repeat(self.batch_size, 1, 1).to(self.device)
         # TODO make this genome conditioned. Until then treat it as a random init normal
         self.policy = Normal(
             z_mean_shape=(self.config.preferences_dim,),
@@ -149,8 +148,8 @@ class Agent(nn.Module):
         )
 
         wm_params = (
-            list(self.grounding_wm.parameters()) +
-            list(self.preference_head.parameters())
+            list(self.grounding_wm.parameters())
+            # list(self.preference_head.parameters())
         )
         kwargs = dict(lr=0.005)
         self.optimizer_registry.register_optim(
@@ -194,8 +193,7 @@ class Agent(nn.Module):
     
     def expose_pref(self) -> dict:
         return {
-            'mean': self.preferences.mean,
-            'log_std': self.preferences.log_std
+            'pref': self.genome,
         }
 
     def initialize_state_node(self, atomic_t: int, obs: torch.Tensor):
@@ -208,9 +206,9 @@ class Agent(nn.Module):
         else:
             # calculate next h using previous state
             state = self.states_cache.get(atomic_t - 1)
-            h = self.transition_model.forward_h(state)
+            h, _ = self.transition_model.forward_h(state)
 
-        z = self.transition_model.forward_z(h, o_embed_t=obs)  # generate initial posterior
+        z = self.transition_model.forward_z(h, external=obs)  # generate initial posterior
    
         self.states_cache.add(atomic_t, POMDPState(
             h=h,
@@ -320,8 +318,7 @@ class Agent(nn.Module):
             if step == 0:  # first step, percieve for latest prior and wrap in optim
                 self.update_states_cache()
                 self.belief_optim_wrap()
-                # P_states = self.states_cache.replica(detach=True, freeze=True)
-
+                
             # random timestep group selection, to run inference on
             timestep = random.choice(list(self.states_cache.keys()))
             print('-----------Selected atomic timestep---------------', timestep)
@@ -329,9 +326,7 @@ class Agent(nn.Module):
                 # P_states,
                 backprop_belief=True)  # lr scheduling comes later. test first
 
-            # P_states = P_states.replica(detach=True, freeze=True)
             self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
-            # self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
             # every 'param_learning_steps', do param learning (backprop_belief=False)
             if step % param_learning_steps == 0 and step != 0:
                 total_vfe = sum(
@@ -341,8 +336,6 @@ class Agent(nn.Module):
                         backprop_belief=False
                     ) for t in self.states_cache.keys()
                 )
-                # P_states = P_states.replica(detach=True, freeze=True)
-                # self.latent_observation_cache = self.latent_observation_cache.replica(detach=True)
                 self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
                 print(f"[Step {step}] VFE = {total_vfe:.6f}") if print_statements else None
 
@@ -356,7 +349,6 @@ class Agent(nn.Module):
     def inference_step(
             self,
             timestep,
-            # P_states,
             backprop_belief=False
         ):
         """
@@ -381,7 +373,7 @@ class Agent(nn.Module):
 
         # -------- how well does posterior from t-1 predict posterior of t -------- 
         if s_tm1 is not None:
-            ph_t_from_tm1 = self.transition_model.forward_h(s_tm1)
+            ph_t_from_tm1, _ = self.transition_model.forward_h(s_tm1)
             pz_t_from_tm1 = self.transition_model.forward_z(ph_t_from_tm1)
             self.loss_module.include(
                 ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
@@ -390,7 +382,7 @@ class Agent(nn.Module):
         # -------- would-be h-prior at t+1 under current belief -------- 
         if s_tp1 is not None:
             qz_tp1 = s_tp1.get('z')
-            ph_at_tp1 = self.transition_model.forward_h(s_t)
+            ph_at_tp1, _ = self.transition_model.forward_h(s_t)
             pz_at_tp1 = self.transition_model.forward_z(ph_at_tp1)
             self.loss_module.include(
                 ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,  # TODO: better naming convention here??
@@ -480,35 +472,65 @@ class Agent(nn.Module):
         """
         efe = 0
         
+        # first, create planning priors from wm
+        seed_s = self.states_cache.get(self.atomic_count)
+        priors = [seed_s]
+        s = seed_s
+        with torch.no_grad():
+            # freeze gradients for prior_z
+            for _ in range(self.planning_horizon):
+                h, _ = self.grounding_wm.forward_h(s)
+                z = self.grounding_wm.forward_z(h, self.genome)
+                # TODO planning action here
+                a = self.empty_action_init()
+                s = POMDPState(
+                    h=h,
+                    z=z,
+                    a=a,
+                )
+                priors.append(s)
+            prior_z = [s.get('z') for s in priors]
+
         for _ in range(self.n_policies):
             pi = self.policy.sample()
-            efe += self.rollout(pi)
+            rollout = self.rollout(seed_s=seed_s, policy=pi)
+            rollout_z = [s.get('z') for s in rollout]
+            [self.loss_module.include(
+                ('instrumental_value', self.loss_module.kl, 
+                rz, pz),
+            ) for rz, pz in zip(rollout_z, prior_z)]
+            instrumental = self.loss_module.compute()
+            epistemic = sum([s.get('z').entropy() for s in rollout])
+            print('instrumental?', instrumental, 'epistemic', epistemic)
+            efe += instrumental - epistemic
 
-        
+        print('total efe?', efe)
 
-    
+
     def rollout(
             self,
+            seed_s,
             policy,
         ):
         """
         Using the grounding wm as our prior, sample various policies and derive EFE for each one from rollouts
         """
         # create planning priors from wm.
-        seed_s = self.states_cache.get(self.atomic_count)
         rollout = [seed_s]
-
+        s = seed_s
         for _ in range(self.planning_horizon):
-            _, seed_h = self.ground_wm.forward_h(seed_s)
-            seed_z = self.ground_wm.forward_z(seed_h)
+            h, _ = self.transition_model.forward_h(s)
+            z = self.transition_model.forward_z(h)
             # TODO planning action here
-            seed_a = self.empty_action_init()
-            seed_s = POMDPState(
-                h=seed_h,
-                z=seed_z,
-                a=seed_a,
+            a = self.empty_action_init()
+            s = POMDPState(
+                h=h,
+                z=z,
+                a=a,
             )
-            rollout.append(seed_s)
+            rollout.append(s)
+
+        return rollout
 
 
     
@@ -545,7 +567,7 @@ class Agent(nn.Module):
             z_mean_shape=(self.batch_size, 1, self.a_dim,),  # TODO fix the magic number. it really is supposed to be 1,
             # to represent the singular atomic timestep, but this is horrible practice.
             z_log_std_shape=(self.batch_size, 1, self.a_dim,)
-        )
+        ).to(self.device)
 
 
 # config = OmegaConf.load("/mnt/e/nmmo_actinf/Senti/src/Senti/config.yaml")

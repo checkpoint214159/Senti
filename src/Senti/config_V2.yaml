@@ -54,7 +54,7 @@ agent:
     h_dim: ${agent.h_dim}
     z_dim: ${agent.z_dim}
     a_dim: ${agent.a_dim}
-    obs_dim: ${agent.obs_dim}
+    external_dim: ${agent.obs_dim}
     device: ${agent.device}
     hidden_dim: 20
     num_GRU_layers: ${agent.state_depth}
@@ -63,7 +63,7 @@ agent:
     h_dim: ${agent.h_dim}
     z_dim: ${agent.z_dim}
     a_dim: ${agent.a_dim}
-    obs_dim: ${agent.obs_dim}
+    external_dim: ${agent.preferences_dim}
     device: ${agent.device}
     hidden_dim: 20
     num_GRU_layers: ${agent.state_depth}

@@ -15,12 +15,12 @@ class TensorMixin:
         return self
 
 
-class StateMixin:
-    """replica behaviour for specifically State like things"""
-    def replica(self, detach=False, freeze=False):
-        cloned_cache = copy.deepcopy(self)
-        cloned_cache._data = {k: v.clone(detach, freeze) for k, v in cloned_cache._data.items()}
-        return cloned_cache
+# class StateMixin:
+#     """replica behaviour for specifically State like things"""
+#     def replica(self, detach=False, freeze=False):
+#         cloned_cache = copy.deepcopy(self)
+#         cloned_cache._data = {k: v.clone(detach, freeze) for k, v in cloned_cache._data.items()}
+#         return cloned_cache
 
 
 class TimestepMixin:

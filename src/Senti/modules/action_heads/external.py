@@ -4,8 +4,8 @@ import torch
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.registry import ACTION_HEADS
 from Senti.modules.action_heads.base import BaseActionHead
+from Senti.registry import ACTION_HEADS
 
 
 @ACTION_HEADS.register_module()

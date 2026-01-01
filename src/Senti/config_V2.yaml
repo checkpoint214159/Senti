@@ -23,6 +23,7 @@ agent:
   history_size: ${eval:"${agent.atomic_timestep} * ${agent.history}"}
   discrete_timestep: ${eval:"${agent.atomic_timestep} * ${agent.discrete_step}"}
   planning_horizon: 5
+  planning_steps: 4
 
   nmmo_obs_encoder:
     name: NmmoEncoders
@@ -59,6 +60,13 @@ agent:
     hidden_dim: 20
     num_GRU_layers: ${agent.state_depth}
 
+  deliberative_head:
+    h_dim: ${agent.h_dim}
+    z_dim: ${agent.z_dim}
+    a_dim: ${agent.a_dim}
+    gene_dim: ${agent.preferences_dim}
+    policy_dim: ${agent.policy_dim}
+
   grounding_wm:
     h_dim: ${agent.h_dim}
     z_dim: ${agent.z_dim}
@@ -68,11 +76,10 @@ agent:
     hidden_dim: 20
     num_GRU_layers: ${agent.state_depth}
 
-  action_head:
-    x_dim: ${agent.h_dim}
+  habitual_head:
+    h_dim: ${agent.h_dim}
+    z_dim: ${agent.z_dim}
     a_dim: ${agent.a_dim}
-    gene_dim: ${agent.preferences_dim}
-    policy_dim: ${agent.policy_dim}
 
   pref:
     h_dim: ${agent.h_dim}

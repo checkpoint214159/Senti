@@ -67,8 +67,13 @@ class RSSM(nn.Module):
             z_log_std=std,
             is_posterior=is_posterior,
         ).to(self.device)
+    
+    def forward(self, state: POMDPState, a:torch.Tensor): 
+        h, seed_next = self.forward_h(state, a)
+        z = self.forward_z(h)
+        return h, seed_next, z
 
-    def forward_h(self, state:POMDPState) -> GroupedCategoricalState:
+    def forward_h(self, state:POMDPState, a:torch.Tensor) -> GroupedCategoricalState:
         """
         h_t = f(h_{t-1}, z_{t-1}, a_{t-1})
         
@@ -79,8 +84,8 @@ class RSSM(nn.Module):
         N = num_layers
         """
         G, C = self.h_groups, self.h_classes
-        prev_z, prev_a, prev_h = state.get('z'), state.get('a'), state.get('h')
-        z, a = prev_z.sample(), prev_a.sample()
+        prev_z, prev_h = state.get('z'), state.get('h')
+        z = prev_z.sample()
         # print('z and a shape?', z.shape, a.shape)
         x = torch.cat([z, a], dim=-1)  # [B, L, az_emb]
         prev_h = prev_h.as_tensor()  # [B, T, h_emb]. T SHOULD be 1 here.

@@ -1,8 +1,85 @@
 import copy
+import functools
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, fields
 
 import torch
 import torch.nn as nn
+
+
+def _apply_node_logic(cls):
+    """Core logic shared by all keyable types"""
+    cls = dataclass(cls, init=False, eq=False)
+    
+    # i prefer explicit string methods, as I think for semantics it makes it clearer
+    # what is being accessed, improving readability
+    cls.get = lambda self, key: getattr(self, key)
+    cls.set = lambda self, key, val: setattr(self, key, val)
+    cls.has = lambda self, key: hasattr(self, key)
+    cls.keys = lambda self: [f.name for f in fields(self)]
+    
+    if not hasattr(cls, 's'):
+        cls.s = property(lambda self: self)
+    return cls
+
+# wrapper to allow for dataclass logic whilst calling nn.Module init first.
+# this is technically dangerous, as we are using dataclass but not treating it
+# as actaul comparable data. This means we simply disable the auto-__eq__ generation,
+# telling python we arent really treating this as comparable data, instead a container for data,
+# or sort of a schema for data.
+def state_node(cls):
+    cls = _apply_node_logic(cls)
+    
+    def __init__(self, *args, **kwargs):
+        super(cls, self).__init__()
+        
+        cls_fields = fields(cls)
+        
+        for i, val in enumerate(args):
+            setattr(self, cls_fields[i].name, val)
+            
+        for name, val in kwargs.items():
+            setattr(self, name, val)
+            
+        for field in cls_fields:
+            if not hasattr(self, field.name):
+                if field.default_factory is not None:
+                    setattr(self, field.name, field.default_factory())
+                else:
+                    setattr(self, field.name, field.default)
+
+        if hasattr(self, '__post_init__'):
+            self.__post_init__()
+
+    cls.__init__ = __init__
+    return cls
+
+def tensor_node(cls):
+    """extend to include tensor-only containers."""
+    cls = state_node(cls)
+    
+    def detach(self):
+        print('detach is running!')
+        """Returns a new instance with all fields detached from the graph"""
+        new_data = {f.name: getattr(self, f.name).detach() 
+                    if hasattr(getattr(self, f.name), 'detach') 
+                    else getattr(self, f.name) 
+                    for f in fields(self)}
+
+        return type(self)(**new_data)
+
+    def clone(self):
+        """Deep clone of the tensors in the node"""
+        print('clone is running!')
+        new_data = {f.name: getattr(self, f.name).clone() 
+                    if hasattr(getattr(self, f.name), 'clone') 
+                    else getattr(self, f.name) 
+                    for f in fields(self)}
+        return type(self)(**new_data)
+
+    cls.detach = detach
+    cls.clone = clone
+    return cls
 
 
 class BaseState(nn.Module, ABC):

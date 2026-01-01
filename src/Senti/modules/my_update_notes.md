@@ -200,3 +200,40 @@ To reiterate, genome is something that is optimized by evolution, and is treated
 Anyways during planning, since we do not have observations nor rewards to help evaluate the instrumental value of our rollouts / imagined futures, we will use a "preference head", conditioned on h and genome. This spits out a z that we take reference from, which describes a "desired z". This is what we will use to derive instrumental value, which is what we need for EFE calculation
 
 
+# 26/12/2025 Action and State
+
+We now destroy the POMDPState from hza into hz only, and create a new State object with action and policy. It makes sense: at the time of a brand new incoming timestep, we have the z and h for that timestep, but not yet the action for that timestep.
+
+This made me create a HierarchicalCache as a nice namespace interface to more easily extract the various semantics
+
+Anyway another problem arises: how do we learn the action head?
+
+
+# 31/12/2025 Learning the action head
+
+Hi its been a few days, been working on my other hackathon thing
+
+Anyway gemini helped me come up with something I find intuitive and reasonable, and also might re-define how I organise things in my agent. More specifically on the action head:
+
+The previous morphology was transition model, grounding wm, and action head. 
+
+A new one would include another action head: one dedicated only for planning. The old action head and grounding wm are grouped together, lets now call it the grounding action head.
+
+Grounding action head is fundementally different: It predicts from (state), whilst the planning one predicts from (state, genome, pi). We call teh only-state predicting one our 'habitual head' and the latter our 'deliberative head'.
+
+Here's the flow:
+
+'next state predictor' models:
+
+transition model: Used during hypotheticals or explanation finding behaviour. So it is used 1. during inference, to calculate VFE to update state beliefs or itself depending on the semantic of the call. 2. During planning as the next state predictor, doing rollouts of next state which will be compared against the output of the grounding wm
+
+grounding wm: The 'self' (or what can be better defined as the self). it is used in 1. Grounding step, where post inference, it learns to predict the beliefs in our cache post-inference. 2. Planning: Give a 'backbone' prior, which is used to calculate EFE against the rollouts
+
+action heads:
+
+planning action head (deliberative head): Used and learned during planning. During rollouts, after EFE is calculated backpropagates and updates
+
+state-only action head: More habitual, learned in two places:
+1. During grounding step: tries to predict the static actions in the cache given the state beliefs. so for instance if previous steps beliefs have changed compared to where they are now, the action head must learn to use our new beliefs to predict the actions, which have remained static. is this part reasonable?
+2. During planning step: tries to predict the outcome of planning, i.e tries to predict the planned action.
+It is used in inference alongside the grounding wm to provide the priors that rollouts are EFE'd against.

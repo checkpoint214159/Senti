@@ -20,18 +20,20 @@ from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
+from Senti.modules.dataclasses.action_policy import ActionPolicy
 from Senti.modules.dataclasses.normal import Normal
+from Senti.modules.dataclasses.obs import LatentObservation
 from Senti.modules.dataclasses.pomdpstate import POMDPState
 from Senti.modules.optim.dist_loss import DistributionLosses
 from Senti.modules.optim.optimregistry import OptimRegistry
 from Senti.modules.utils.caches import (
     Cache,
+    CloneableCache,
+    HierarchicalCache,
     StateCache,
-    StateTimestepCache,
-    TensorCache,
 )
 from Senti.modules.utils.utils import nmmo_agent_check_config
-from Senti.registry import AUTOENCODERS, DECODERS, WORLDMODELS
+from Senti.registry import ACTION_HEADS, AUTOENCODERS, DECODERS, WORLDMODELS
 
 OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {}))
 
@@ -96,14 +98,32 @@ class Agent(nn.Module):
         self.param_learning_steps = self.config.param_learning_steps
         self.planning_horizon = self.config.planning_horizon
         self.n_policies = self.config.n_policies
+        self.planning_steps = self.config.planning_steps
         # nmmo_agent_check_config(self.config)
         
-        # observations and states cache.
-        self.states_cache = StateTimestepCache(value_type=POMDPState)
+        # caches in observation space
         self.observation_cache = Cache(value_type=dict)
-        self.latent_observation_cache = TensorCache()
-        self.action_cache = TensorCache()
-        self.latent_action_cache = TensorCache()
+        self.action_cache = Cache(value_type=dict)
+
+        # caches that respect atomic timestep
+        self.latent_observation = CloneableCache(value_type=LatentObservation)
+        self.action_policy = CloneableCache(value_type=ActionPolicy)
+        self.states = StateCache(value_type=POMDPState)
+        self._cache = HierarchicalCache(
+            mapping={
+                's': self.states,
+                'h': self.states,
+                'z': self.states,
+                'lat_o': self.latent_observation,
+                'a': self.action_policy,
+                'pi': self.action_policy,
+            },
+            cache_names={
+                'states': self.states,
+                'latent_obs': self.latent_observation,
+                'api': self.action_policy,
+            }
+        )
 
         # dimensionality and tensor shapes
         # self.state_depth = self.config.state_depth
@@ -127,6 +147,9 @@ class Agent(nn.Module):
         self.zh_o = DECODERS.build("LatentObsDecoder", config.zh_o)
         # self.preference_head = PREFERENCES.build("BasePreferenceHead", config.pref)
 
+        self.habitual_head = ACTION_HEADS.build("ActionHead", config.habitual_head)
+        self.deliberative_head = ACTION_HEADS.build("FiLMActionHead", config.deliberative_head)
+
         self.genome = torch.randn(
             1, self.config.preferences_dim,
         ).unsqueeze(0).repeat(self.batch_size, 1, 1).to(self.device)
@@ -140,7 +163,8 @@ class Agent(nn.Module):
         inference_params = (
             list(self.obs_autoencoder.parameters()) + 
             list(self.transition_model.parameters()) +
-            list(self.zh_o.parameters())
+            list(self.zh_o.parameters()) +
+            list(self.deliberative_head.parameters())
         )
         kwargs = dict(lr=0.005)
         self.optimizer_registry.register_optim(
@@ -148,15 +172,21 @@ class Agent(nn.Module):
         )
 
         wm_params = (
-            list(self.grounding_wm.parameters())
-            # list(self.preference_head.parameters())
+            list(self.grounding_wm.parameters()) +
+            list(self.habitual_head.parameters())
         )
         kwargs = dict(lr=0.005)
         self.optimizer_registry.register_optim(
             'wm', wm_params, **kwargs
         )
 
-        # 
+        policy_params = (
+            list(self.policy.parameters())
+        )
+        kwargs = dict(lr=0.005)
+        self.optimizer_registry.register_optim(
+            'policy', policy_params, **kwargs
+        )
 
         self.atomic_timestep = config.atomic_timestep
         self.discrete_step = config.discrete_step
@@ -173,10 +203,9 @@ class Agent(nn.Module):
             out_channels=1,
             kernel_size=1
         )  # to aggregate across observational timesteps into one singular timestep 
-        
-
 
         self.to(self.device)
+        self.prev_api: ActionPolicy | None = None
 
     def expose_morphology(self) -> dict:
         """
@@ -195,29 +224,25 @@ class Agent(nn.Module):
         return {
             'pref': self.genome,
         }
+    
+    def policy_init(self):
+        # TODO: make it dependent on genome. for now just sample.
+        return self.policy.sample()
 
-    def initialize_state_node(self, atomic_t: int, obs: torch.Tensor):
-        a = self.empty_action_init()  # FOR NOW
-        if atomic_t == 1:
-            h = self.transition_model.initial_h(
-                self.batch_size, 1  # magic number 1. i am so cooked. this is to represent timestep
-            )  # TODO this could be learned?
-     
+    def update_api_cache(self, atomic_t: int):
+        if self.prev_api is None:
+            a, pi = self.empty_action_init(), self.policy_init()
+            prev_api = ActionPolicy(
+                a=a,
+                pi=pi,
+            )
         else:
-            # calculate next h using previous state
-            state = self.states_cache.get(atomic_t - 1)
-            h, _ = self.transition_model.forward_h(state)
+            prev_api = self.prev_api
+        print('atomic_t in update_api_cache?', atomic_t, prev_api)
+        self._cache.set_container('api', atomic_t, prev_api)
 
-        z = self.transition_model.forward_z(h, external=obs)  # generate initial posterior
-   
-        self.states_cache.add(atomic_t, POMDPState(
-            h=h,
-            z=z,
-            a=a).to(self.device)
-        )
-        
 
-    def update_latent_obs(self, timesteps:list[int], atomic_num:int):
+    def update_latent_obs(self, timesteps:list[int], atomic_t:int):
         """
         TODO: assumes that the obs encoder operates on each timestep seperately, i.e it doesnt support us just
         stacking the tensor and doing one pass through. this should change
@@ -230,18 +255,47 @@ class Agent(nn.Module):
 
         stacked = torch.stack(obs, -2)
         atomic = self.timestep_conv(stacked)
-        self.latent_observation_cache.add(
-                atomic_num, atomic.to(self.device))
-        
+        atomic = atomic.detach()   # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
+        self._cache.set_container(
+            'latent_obs', atomic_t, LatentObservation(lat_o=atomic.to(self.device)))
 
-    def update_states_cache(self):
+
+    def update_states_cache(self, atomic_t: int, obs: torch.Tensor):
+        if atomic_t == 1:
+            h = self.transition_model.initial_h(
+                self.batch_size, 1  # magic number 1. i am so cooked. this is to represent timestep
+            )  # TODO this could be learned?
+
+        else:
+            # calculate next h using previous state
+            prev_state = self._cache.get_semantic('s', atomic_t - 1)
+            # prev_action = self._cache.get_semantic('a', atomic_t - 1)
+            prev_action = self._cache.get_semantic('a', atomic_t - 1)
+            h, _ = self.transition_model.forward_h(prev_state, prev_action)
+
+        z = self.transition_model.forward_z(h, external=obs)  # generate initial posterior
+        h = h.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
+        z = z.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
+
+        self._cache.set_container('states', atomic_t, POMDPState(
+            h=h,
+            z=z).to(self.device)
+        )
+
+    def update_caches(self, timesteps:list[int], atomic_t:int):
+        print('atomic_t', atomic_t)
         """
-        Simple helper method to update all timesteps in observation cache.
+        calls various cache updating methods.
         """
-        for atomic_t in self.latent_observation_cache.keys():
-            if not self.states_cache.has(atomic_t):
-                obs: torch.Tensor = self.latent_observation_cache.get(atomic_t)
-                self.initialize_state_node(atomic_t, obs)
+        self.update_latent_obs(timesteps, atomic_t)
+        if not self._cache.has_container('api', atomic_t):
+            self.update_api_cache(atomic_t)  # TODO: decide to set here or immediately after planning.
+            # here is neater, but technically if we freeze the agent after we make its move, it will have had
+            # no idea what its last latent aciton was.
+        if not self._cache.has_container('states', atomic_t):
+            obs: torch.Tensor = self._cache.get_semantic('lat_o', atomic_t)
+            self.update_states_cache(atomic_t, obs)
+        
                 
 
     def belief_optim_wrap(self):
@@ -249,7 +303,7 @@ class Agent(nn.Module):
         Helper method to convert all states in state cache to parameters, wrapping around them with an optimizer
         """
         # seperate optimizer for over beliefs over states
-        all_params = self.states_cache.get_params_flattened()
+        all_params = self._cache.get_params_flattened('states')
         kwargs = dict(lr=0.5)  # TODO fit this into config and organise optim registry call better
         self.optimizer_registry.register_optim('states_cache', all_params, optim_name='SGD', **kwargs)
 
@@ -278,15 +332,15 @@ class Agent(nn.Module):
         if (self.curr_timestep % self.atomic_timestep) == 0:
             self.atomic_count += 1
             timesteps = list(range(self.curr_timestep - self.atomic_timestep + 1, self.curr_timestep + 1))
-            self.update_latent_obs(timesteps, self.atomic_count)
+            self.update_caches(timesteps, self.atomic_count)
 
             if (self.atomic_count % self.discrete_step) == 0 and self.atomic_count != 0:
                 self.inference(
                     self.inference_steps,
                     self.param_learning_steps,
                 )
+            
                 self.ground_wm()
-
                 self.planning()
         # 6 - 9:
         
@@ -316,17 +370,17 @@ class Agent(nn.Module):
 
         for step in range(max_update_steps):
             if step == 0:  # first step, percieve for latest prior and wrap in optim
-                self.update_states_cache()
                 self.belief_optim_wrap()
                 
             # random timestep group selection, to run inference on
-            timestep = random.choice(list(self.states_cache.keys()))
+            timestep = random.choice(list(self._cache.keys('states')))
             print('-----------Selected atomic timestep---------------', timestep)
             self.inference_step(timestep,
                 # P_states,
                 backprop_belief=True)  # lr scheduling comes later. test first
+            self._cache.map_cache('latent_obs', lambda c: c.clone(detach=True))
+            # self._cache.map_cache('api', lambda c: c.clone(detach=True))
 
-            self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
             # every 'param_learning_steps', do param learning (backprop_belief=False)
             if step % param_learning_steps == 0 and step != 0:
                 total_vfe = sum(
@@ -334,9 +388,9 @@ class Agent(nn.Module):
                         timestep=t,
                         # P_states=P_states,
                         backprop_belief=False
-                    ) for t in self.states_cache.keys()
+                    ) for t in self._cache.keys('states')
                 )
-                self.latent_observation_cache = self.latent_observation_cache.clone(detach=True)
+                self._cache.map_cache('latent_obs', lambda c: c.clone(detach=True))
                 print(f"[Step {step}] VFE = {total_vfe:.6f}") if print_statements else None
 
                 self.optimizer_registry.do_step(
@@ -359,47 +413,54 @@ class Agent(nn.Module):
             P_states: Dict of Ph_t 
             backprop_belief: Boolean on whether or not to call belief optimizer.
         """
-        s_t = self.states_cache.get(timestep)
-        s_tm1 = self.states_cache.get(timestep - 1) if self.states_cache.has(timestep - 1) else None  # imperative and breaks responsibility but very verbose and clear
-        s_tp1 = self.states_cache.get(timestep + 1) if self.states_cache.has(timestep + 1) else None  # especially considering this whole function is quite noisy
+        s_t: POMDPState = self._cache.get_semantic('s', timestep)
 
         # p(z_t | h_t) kl q(z_t | h_t, o_t)
         h_t = s_t.get('h')
         pz_t = self.transition_model.forward_z(h_t)
+
         qz_t = s_t.get('z')
         self.loss_module.include(
             ('qz_t vs pz_t', self.loss_module.kl,
             qz_t, pz_t))
-
-        # -------- how well does posterior from t-1 predict posterior of t -------- 
-        if s_tm1 is not None:
-            ph_t_from_tm1, _ = self.transition_model.forward_h(s_tm1)
-            pz_t_from_tm1 = self.transition_model.forward_z(ph_t_from_tm1)
+            
+        tm1 = timestep - 1
+        if self._cache.has_semantic('s', tm1) and self._cache.has_semantic('a', tm1):
+            print('this shouldnt run right now')
+            s_tm1 = self._cache.get_semantic('s', tm1)
+            a_tm1 = self._cache.get_semantic('a', tm1)
+            # -------- how well does posterior from t-1 predict posterior of t -------- 
+            _, _, pz_t_from_tm1= self.transition_model.forward(s_tm1, a_tm1)
             self.loss_module.include(
                 ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
                 qz_t, pz_t_from_tm1))
-
-        # -------- would-be h-prior at t+1 under current belief -------- 
-        if s_tp1 is not None:
-            qz_tp1 = s_tp1.get('z')
-            ph_at_tp1, _ = self.transition_model.forward_h(s_t)
-            pz_at_tp1 = self.transition_model.forward_z(ph_at_tp1)
+            
+            # ------- loss from action or something lol --------
+            # TODO do we try and do this? will have to predict a from pz_t_from_tm1, and ph_t_from_tm1, which may be mroe unstable?
+        
+        tp1 = timestep + 1
+        if self._cache.has_semantic('s', tp1) and self._cache.has_semantic('a', tp1):
+            print('this shouldnt run right now')
+            qz_tp1 = self._cache.get_semantic('z', tp1)
+            a_tp1 = self._cache.get_semantic('a', tp1)
+            _, _, pz_at_tp1= self.transition_model.forward(s_t, a_tp1)
             self.loss_module.include(
-                ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,  # TODO: better naming convention here??
-                qz_tp1, pz_at_tp1),
-            )
+                ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,
+                qz_tp1, pz_at_tp1))
+
         states_energy = self.loss_module.compute()
 
         # message from obs
         qz_t, qh_t = s_t.get('z').sample(), s_t.get('h').as_tensor()
         lat_o_pred = self.zh_o(qz_t, qh_t)
-        lat_o = self.latent_observation_cache.get(timestep)
+        lat_o = self._cache.get_semantic('lat_o', timestep)
 
         obs_MSE = self.loss_module.MSE(lat_o, lat_o_pred)  # positive equivalent for NLL if latent obs
         # was a variational belief. but it isnt, its just some tensors
         # it should help to update zh_o and qz_t and qh_t though
         
         total_energy = states_energy + obs_MSE
+        # total_energy = states_energy
 
         if backprop_belief:
             self.optimizer_registry.do_step(
@@ -417,39 +478,41 @@ class Agent(nn.Module):
         """
         # format x
         print('-----------------GROUNDING WM STEP-----------------')
-        all_a = self.states_cache \
+        all_a = self._cache.get('api') \
             .vmap(lambda s: s.get('a')) \
             .values()
-        all_z = self.states_cache \
+        all_z = self._cache.get('states') \
             .vmap(lambda s: s.get('z')) \
             .values()
-        all_h = self.states_cache \
+        all_h = self._cache.get('states') \
             .vmap(lambda s: s.get('h')) \
             .values()
         
         all_z = type(all_z[0]).concat(all_z, 1)
         z = all_z.map(lambda z: z[:, :-1])  # exclude the final state when passing to wm
-        ground_z = all_z.map(lambda z: z[:, 1:])  # get all except first state
 
-        all_a = type(all_a[0]).concat(all_a, 1)
-        a = all_a.map(lambda a: a[:, :-1])
-        ground_a = all_a.map(lambda a: a[:, 1:])
+        # TODO This is horrible practice, hardcoding [:-1] like that 
+        a = torch.concat(all_a[:-1], 1)
         seed_h = all_h[0]
-        seed_state = POMDPState(
+        s = POMDPState(
             h=seed_h,
             z=z,  # [B, L-1, z_emb]
-            a=a,  # [B, L-1, a_emb]
         )
-        pred_h, _ = self.grounding_wm.forward_h(seed_state) # [B, L-1, h_emb]
-        pred_z = self.grounding_wm.forward_z(pred_h)  # only based off h, no obs [B, L-1, z_emb]
 
+        # forward
+        pred_h, _, pred_z = self.grounding_wm.forward(s, a) # [B, L-1, h_emb]
         # correct wm to accurately predict our beliefs, based only off h.
+        ground_z = all_z.map(lambda z: z[:, 1:])  # get all except first state
         self.loss_module.include(
             ('wm_grounding', self.loss_module.kl, 
             pred_z, ground_z),
         )
 
-        grounding_loss = self.loss_module.compute()
+        pred_a = self.habitual_head.forward_hz(pred_h, pred_z)
+        print('pred_a shape vs a shape', pred_a.shape, a.shape)
+        action_mse = self.loss_module.MSE(pred_a, a)
+
+        grounding_loss = self.loss_module.compute() + action_mse
 
         self.optimizer_registry.do_step(
             key='wm',
@@ -469,13 +532,14 @@ class Agent(nn.Module):
 
         Then, use this updated policy to predict action
         Use an affine transformation to augment the pre-sampling policy
+
+        Start at t-1, because we dont have action for the current step, so
+        we must take the previous action
         """
-        efe = 0
-        
         # first, create planning priors from wm
-        seed_s = self.states_cache.get(self.atomic_count)
-        priors = [seed_s]
+        seed_s = self._cache.get_semantic('s', self.atomic_count - 1)
         s = seed_s
+        priors = [s]
         with torch.no_grad():
             # freeze gradients for prior_z
             for _ in range(self.planning_horizon):
@@ -491,6 +555,27 @@ class Agent(nn.Module):
                 priors.append(s)
             prior_z = [s.get('z') for s in priors]
 
+        old_policy = self.policy.clone(detach=True)
+
+        for i in range(self.planning_steps):
+            self.planning_step(seed_s, prior_z)
+
+        # lastly, sample updated policy
+        final_pi = self.policy.sample()
+        seed_s = self.states_cache.get(self.atomic_count)
+        a = self.action_head.forward(seed_s, self.genome, final_pi)
+        self.states_cache.set(self.atomic_count, a)
+
+        # TODO merge new policy and old one tgt
+
+
+    def planning_step(
+        self,
+        seed_s,
+        prior_z,
+    ):  
+        print('self.policy before?', self.policy.mean)
+        efe = 0
         for _ in range(self.n_policies):
             pi = self.policy.sample()
             rollout = self.rollout(seed_s=seed_s, policy=pi)
@@ -500,11 +585,17 @@ class Agent(nn.Module):
                 rz, pz),
             ) for rz, pz in zip(rollout_z, prior_z)]
             instrumental = self.loss_module.compute()
+
             epistemic = sum([s.get('z').entropy() for s in rollout])
-            print('instrumental?', instrumental, 'epistemic', epistemic)
+            # print('instrumental?', instrumental, 'epistemic', epistemic)
             efe += instrumental - epistemic
 
+        self.optimizer_registry.do_step(
+            key='policy',
+            loss=efe
+        )
         print('total efe?', efe)
+        print('self.policy after?', self.policy.mean)
 
 
     def rollout(
@@ -521,13 +612,13 @@ class Agent(nn.Module):
         for _ in range(self.planning_horizon):
             h, _ = self.transition_model.forward_h(s)
             z = self.transition_model.forward_z(h)
-            # TODO planning action here
-            a = self.empty_action_init()
             s = POMDPState(
                 h=h,
                 z=z,
-                a=a,
+                a=None,
             )
+            a = self.action_head(s, self.genome, policy)
+            s.set('a', a)
             rollout.append(s)
 
         return rollout
@@ -554,8 +645,12 @@ class Agent(nn.Module):
         print('INTERLEAVED?', interleaved)
 
         for t in removed_atomic_timesteps:
-            self.states_cache.remove(t) if self.states_cache.has(t) else None
-            self.latent_observation_cache.remove(t) if self.latent_observation_cache.has(t) else None
+            self._cache.remove_container('states', t) \
+                if self._cache.has_container('states', t) else None
+            self._cache.remove_container('api', t) \
+                if self._cache.has_container('api', t) else None
+            self._cache.remove_container('latent_obs', t) \
+                if self._cache.has_container('latent_obs', t) else None
 
         for t in interleaved:
             self.observation_cache.remove(t) if self.observation_cache.has(t) else None
@@ -563,11 +658,8 @@ class Agent(nn.Module):
 
     def empty_action_init(self):
         """helper method to lazily create empty a."""
-        return Normal(
-            z_mean_shape=(self.batch_size, 1, self.a_dim,),  # TODO fix the magic number. it really is supposed to be 1,
+        return torch.zeros(self.batch_size, 1, self.a_dim,).to(self.device) # TODO fix the magic number. it really is supposed to be 1,
             # to represent the singular atomic timestep, but this is horrible practice.
-            z_log_std_shape=(self.batch_size, 1, self.a_dim,)
-        ).to(self.device)
 
 
 # config = OmegaConf.load("/mnt/e/nmmo_actinf/Senti/src/Senti/config.yaml")

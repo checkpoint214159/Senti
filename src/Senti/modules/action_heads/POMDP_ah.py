@@ -4,8 +4,40 @@ import torch
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.modules.action_heads.external import ExternalActionHead
+from Senti.modules.action_heads.external import BaseActionHead, ExternalActionHead
+from Senti.modules.dataclasses.pomdpstate import POMDPState
 from Senti.registry import ACTION_HEADS
+
+
+@ACTION_HEADS.register_module()
+class ActionHead(BaseActionHead):
+    """
+    Basic action head that takes in the current state x and outputs the action taken.
+    """
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+        self.config = config
+        self.h_dim: list[int] = config.h_dim
+        self.flattened_h = config.h_dim[0] * config.h_dim[1]
+        self.a_dim = self.config.a_dim
+        self.z_dim = config.z_dim
+        self.state_dim = self.flattened_h + self.z_dim
+
+        self.output = nn.Sequential(
+            nn.Linear(self.state_dim, self.a_dim),
+            nn.LayerNorm(self.a_dim),
+            nn.ReLU(),
+            nn.Linear(self.a_dim, self.a_dim)
+        )
+
+    def forward(self, x):
+        return self.output(x)
+    
+
+    def forward_hz(self, h, z):
+        x = torch.cat([h.as_tensor(), z.sample()], dim=-1)
+        return self.forward(x)
+
 
 
 @ACTION_HEADS.register_module()
@@ -29,17 +61,22 @@ class FiLMActionHead(ExternalActionHead):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.config = config
+        self.h_dim: list[int] = config.h_dim
+        self.flattened_h = config.h_dim[0] * config.h_dim[1]
+        self.z_dim = config.z_dim
+        self.state_dim = self.flattened_h + self.z_dim
+        self.a_dim = self.config.a_dim
         self.gene_dim = self.config.gene_dim
         self.policy_dim = self.config.policy_dim
 
         self.concat_dim = self.gene_dim + self.policy_dim
         self.modulator = nn.Sequential(
-            nn.Linear(self.concat_dim, 2 * self.x_dim),
-            nn.LayerNorm(2 * self.x_dim),
+            nn.Linear(self.concat_dim, 2 * self.state_dim),
+            nn.LayerNorm(2 * self.state_dim),
             nn.ReLU(),
-        )  # scale and shift both are x_dim long, we split after running this module
+        )  # scale and shift both are state_dim long, we split after running this module
 
-        self.output = nn.Linear(self.x_dim, self.a_dim)
+        self.output = nn.Linear(self.state_dim, self.a_dim)
 
     def forward(self, x, genome, pi):
         modulation = self.modulator(torch.cat([genome, pi], dim=-1))
@@ -49,4 +86,11 @@ class FiLMActionHead(ExternalActionHead):
         modulated_x = torch.relu(modulated_x)
         
         return self.output(modulated_x)
+    
+    def forward_state(self, x:POMDPState, genome, pi):
+        """
+        useful for abstracting logic
+        """
+        return self.forward(x.get_state(), genome, pi)
+
 

@@ -239,53 +239,37 @@ class HierarchicalCache:
     Of course, this can be solved by just having two HierarchicalCaches that represent two different things.
     """
     def __init__(self,
-        mapping: dict[str, Cache],
-        cache_names: dict[str, Cache] = None,
+        cache_names: dict[str, Cache],
+        mapping: dict[str, str], # semantic -> cache_name (string)
     ):
         """
-        mapping: {'h': self.states, 'z': self.states}
-        cache_names: Optional dict to name the caches, e.g. {self.states: "states"}
-                       If not provided, we can try to infer names or use generic ones.
-                       But it really should be, as it would greatly help with retrieval later.
+        cache_names: {'states': self.states, 'latent_obs': self.latent_observation}
+        mapping: {'h': 'states', 'z': 'states', 'lat_o': 'latent_obs'}
         """
-        self.mapping = mapping
         self.cache_names = cache_names
+        self.mapping = mapping
         
-        self.id_cache_names = set({id(cache) for cache in self.cache_names.values()})
-        self.unique_caches = set({id(cache) for cache in self.mapping.values()})
-        # print('self.unique_caches', self.unique_caches)
-        # print('set(self.cache_names.values())', set(self.cache_names.values()))
+        # Validate that every semantic points to a valid named cache
+        for semantic, name in self.mapping.items():
+            if name not in self.cache_names:
+                raise ValueError(f"Semantic '{semantic}' points to unknown cache '{name}'")
 
-
-        assert self.id_cache_names == self.unique_caches, 'Assertion failed. Expect cache aliases equal to unique caches in mapping argument.'
-        
-        # for cache_obj in self.mapping.values():
-        #     # If you provided a name alias, use it. 
-        #     # Otherwise, use the class name or a custom 'name' attr if it exists.
-        #     unique_attr_name = None
-        #     if cache_names and cache_obj in cache_names:
-        #         unique_attr_name = cache_names[cache_obj]
-        #     else:
-        #         unique_attr_name = getattr(cache_obj, "name", f"{type(cache_obj).__name__.lower()}")
-
-        #     assert unique_attr_name in self.unique_caches, f'Assertion failed: got cache name {unique_attr_name} that is not unique.'
-            
-        #     setattr(self, attr_name, cache_obj)
 
     def _retrieve_cache_from_semantic(self, semantic: str):
         if semantic not in self.mapping:
             raise KeyError(f"Semantic '{semantic}' is not mapped to any cache.")
     
-        return self.mapping[semantic]
+        cache_name = self.mapping[semantic]
+        return self.cache_names[cache_name]
     
     def _retrieve_cache(self, cache_name: str):
         if cache_name not in self.cache_names:
             raise KeyError(f"Could not find cache_name '{cache_name}' in {self.cache_names}.")
-    
         return self.cache_names[cache_name]
 
     def get_semantic(self, semantic: str, key: Any) -> Any:
         cache = self._retrieve_cache_from_semantic(semantic)
+        print('cache from retrieve in get_semantic?', cache.keys(), 'key?', key)
         if not cache.has(key):
             raise KeyError(f"{key} key does not exist in cache, cannot find container to get")
         container = cache.get(key)

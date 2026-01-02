@@ -99,6 +99,7 @@ class Agent(nn.Module):
         self.planning_horizon = self.config.planning_horizon
         self.n_policies = self.config.n_policies
         self.planning_steps = self.config.planning_steps
+        self.policy_dim = self.config.policy_dim
         # nmmo_agent_check_config(self.config)
         
         # caches in observation space
@@ -110,19 +111,19 @@ class Agent(nn.Module):
         self.action_policy = CloneableCache(value_type=ActionPolicy)
         self.states = StateCache(value_type=POMDPState)
         self._cache = HierarchicalCache(
-            mapping={
-                's': self.states,
-                'h': self.states,
-                'z': self.states,
-                'lat_o': self.latent_observation,
-                'a': self.action_policy,
-                'pi': self.action_policy,
-            },
             cache_names={
                 'states': self.states,
                 'latent_obs': self.latent_observation,
                 'api': self.action_policy,
-            }
+            },
+            mapping={
+                's': 'states',
+                'h': 'states',
+                'z': 'states',
+                'lat_o': 'latent_obs',
+                'a': 'api',
+                'pi': 'api',
+            },
         )
 
         # dimensionality and tensor shapes
@@ -155,8 +156,8 @@ class Agent(nn.Module):
         ).unsqueeze(0).repeat(self.batch_size, 1, 1).to(self.device)
         # TODO make this genome conditioned. Until then treat it as a random init normal
         self.policy = Normal(
-            z_mean_shape=(self.config.preferences_dim,),
-            z_log_std_shape=(self.config.preferences_dim,)
+            z_mean_shape=(self.batch_size, 1, self.config.policy_dim,),
+            z_log_std_shape=(self.batch_size, 1, self.config.policy_dim,)
         )
 
         # optimization
@@ -238,7 +239,6 @@ class Agent(nn.Module):
             )
         else:
             prev_api = self.prev_api
-        print('atomic_t in update_api_cache?', atomic_t, prev_api)
         self._cache.set_container('api', atomic_t, prev_api)
 
 
@@ -258,6 +258,7 @@ class Agent(nn.Module):
         atomic = atomic.detach()   # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
         self._cache.set_container(
             'latent_obs', atomic_t, LatentObservation(lat_o=atomic.to(self.device)))
+        print('cache latent obs??', self._cache.get_container('latent_obs', atomic_t))
 
 
     def update_states_cache(self, atomic_t: int, obs: torch.Tensor):
@@ -293,6 +294,9 @@ class Agent(nn.Module):
             # here is neater, but technically if we freeze the agent after we make its move, it will have had
             # no idea what its last latent aciton was.
         if not self._cache.has_container('states', atomic_t):
+            print('cache latent obs right before getting semantic??', self._cache.get_container('latent_obs', atomic_t))
+            print('cache keys???', self._cache.keys('latent_obs'))
+            print('cache has current key???', self._cache.has_container('latent_obs', atomic_t))
             obs: torch.Tensor = self._cache.get_semantic('lat_o', atomic_t)
             self.update_states_cache(atomic_t, obs)
         
@@ -426,7 +430,6 @@ class Agent(nn.Module):
             
         tm1 = timestep - 1
         if self._cache.has_semantic('s', tm1) and self._cache.has_semantic('a', tm1):
-            print('this shouldnt run right now')
             s_tm1 = self._cache.get_semantic('s', tm1)
             a_tm1 = self._cache.get_semantic('a', tm1)
             # -------- how well does posterior from t-1 predict posterior of t -------- 
@@ -440,7 +443,6 @@ class Agent(nn.Module):
         
         tp1 = timestep + 1
         if self._cache.has_semantic('s', tp1) and self._cache.has_semantic('a', tp1):
-            print('this shouldnt run right now')
             qz_tp1 = self._cache.get_semantic('z', tp1)
             a_tp1 = self._cache.get_semantic('a', tp1)
             _, _, pz_at_tp1= self.transition_model.forward(s_t, a_tp1)
@@ -538,19 +540,19 @@ class Agent(nn.Module):
         """
         # first, create planning priors from wm
         seed_s = self._cache.get_semantic('s', self.atomic_count - 1)
-        s = seed_s
+        seed_h, seed_z = seed_s.get('h'), seed_s.get('z')
+        seed_a = self.habitual_head.forward_hz(seed_h, seed_z)
+
+        s, a = seed_s, seed_a
         priors = [s]
         with torch.no_grad():
             # freeze gradients for prior_z
-            for _ in range(self.planning_horizon):
-                h, _ = self.grounding_wm.forward_h(s)
-                z = self.grounding_wm.forward_z(h, self.genome)
-                # TODO planning action here
-                a = self.empty_action_init()
+            for _ in range(self.planning_horizon):  # predict t+1, t+2, ...
+                h, _, z = self.grounding_wm.forward(s, a)
+                a = self.habitual_head.forward_hz(h, z)
                 s = POMDPState(
                     h=h,
                     z=z,
-                    a=a,
                 )
                 priors.append(s)
             prior_z = [s.get('z') for s in priors]
@@ -558,13 +560,16 @@ class Agent(nn.Module):
         old_policy = self.policy.clone(detach=True)
 
         for i in range(self.planning_steps):
-            self.planning_step(seed_s, prior_z)
+            self.planning_step(seed_s, seed_a, prior_z)
 
         # lastly, sample updated policy
         final_pi = self.policy.sample()
-        seed_s = self.states_cache.get(self.atomic_count)
-        a = self.action_head.forward(seed_s, self.genome, final_pi)
-        self.states_cache.set(self.atomic_count, a)
+        final_a = self.deliberative_head.forward_hz(
+            seed_h, seed_z, self.genome, final_pi)
+        self.prev_api = ActionPolicy(
+            a=final_a.detach(),
+            pi=final_pi.detach()
+        )    
 
         # TODO merge new policy and old one tgt
 
@@ -572,13 +577,14 @@ class Agent(nn.Module):
     def planning_step(
         self,
         seed_s,
+        seed_a,
         prior_z,
     ):  
-        print('self.policy before?', self.policy.mean)
+        
         efe = 0
         for _ in range(self.n_policies):
             pi = self.policy.sample()
-            rollout = self.rollout(seed_s=seed_s, policy=pi)
+            rollout = self.rollout(seed_s=seed_s, seed_a=seed_a, policy=pi)
             rollout_z = [s.get('z') for s in rollout]
             [self.loss_module.include(
                 ('instrumental_value', self.loss_module.kl, 
@@ -594,13 +600,12 @@ class Agent(nn.Module):
             key='policy',
             loss=efe
         )
-        print('total efe?', efe)
-        print('self.policy after?', self.policy.mean)
 
 
     def rollout(
             self,
             seed_s,
+            seed_a,
             policy,
         ):
         """
@@ -608,17 +613,17 @@ class Agent(nn.Module):
         """
         # create planning priors from wm.
         rollout = [seed_s]
-        s = seed_s
+        s, a = seed_s, seed_a
+        # print('seed_s', seed_s)
         for _ in range(self.planning_horizon):
-            h, _ = self.transition_model.forward_h(s)
-            z = self.transition_model.forward_z(h)
+            h, _, z = self.transition_model.forward(s, a)
+            a = self.deliberative_head.forward_hz(
+                h, z, self.genome, policy
+            )
             s = POMDPState(
                 h=h,
                 z=z,
-                a=None,
             )
-            a = self.action_head(s, self.genome, policy)
-            s.set('a', a)
             rollout.append(s)
 
         return rollout

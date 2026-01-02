@@ -78,6 +78,10 @@ class FiLMActionHead(ExternalActionHead):
 
         self.output = nn.Linear(self.state_dim, self.a_dim)
 
+    def forward_hz(self, h, z, genome, pi):
+        x = torch.cat([h.as_tensor(), z.sample()], dim=-1)
+        return self.forward(x, genome, pi)
+
     def forward(self, x, genome, pi):
         modulation = self.modulator(torch.cat([genome, pi], dim=-1))
         gamma, beta = torch.chunk(modulation, 2, dim=-1)

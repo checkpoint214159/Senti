@@ -258,7 +258,6 @@ class Agent(nn.Module):
         atomic = atomic.detach()   # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
         self._cache.set_container(
             'latent_obs', atomic_t, LatentObservation(lat_o=atomic.to(self.device)))
-        print('cache latent obs??', self._cache.get_container('latent_obs', atomic_t))
 
 
     def update_states_cache(self, atomic_t: int, obs: torch.Tensor):
@@ -284,7 +283,6 @@ class Agent(nn.Module):
         )
 
     def update_caches(self, timesteps:list[int], atomic_t:int):
-        print('atomic_t', atomic_t)
         """
         calls various cache updating methods.
         """
@@ -294,9 +292,6 @@ class Agent(nn.Module):
             # here is neater, but technically if we freeze the agent after we make its move, it will have had
             # no idea what its last latent aciton was.
         if not self._cache.has_container('states', atomic_t):
-            print('cache latent obs right before getting semantic??', self._cache.get_container('latent_obs', atomic_t))
-            print('cache keys???', self._cache.keys('latent_obs'))
-            print('cache has current key???', self._cache.has_container('latent_obs', atomic_t))
             obs: torch.Tensor = self._cache.get_semantic('lat_o', atomic_t)
             self.update_states_cache(atomic_t, obs)
         
@@ -403,7 +398,8 @@ class Agent(nn.Module):
                 )
 
         return total_vfe
-    
+
+
     def inference_step(
             self,
             timestep,

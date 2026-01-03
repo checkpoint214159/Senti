@@ -269,7 +269,6 @@ class HierarchicalCache:
 
     def get_semantic(self, semantic: str, key: Any) -> Any:
         cache = self._retrieve_cache_from_semantic(semantic)
-        print('cache from retrieve in get_semantic?', cache.keys(), 'key?', key)
         if not cache.has(key):
             raise KeyError(f"{key} key does not exist in cache, cannot find container to get")
         container = cache.get(key)

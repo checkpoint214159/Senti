@@ -511,7 +511,6 @@ class Agent(nn.Module):
         )
 
         pred_a = self.habitual_head.forward_hz(pred_h, pred_z)
-        print('pred_a shape vs a shape', pred_a.shape, a.shape)
         action_mse = self.loss_module.MSE(pred_a, a)
 
         grounding_loss = self.loss_module.compute() + action_mse
@@ -647,7 +646,6 @@ class Agent(nn.Module):
         # to get the actual timesteps to remove from obs cache.
 
         print('REMOVED ATOMIC TIMESTEPS', removed_atomic_timesteps)
-        print('INTERLEAVED?', interleaved)
 
         for t in removed_atomic_timesteps:
             self._cache.remove_container('states', t) \

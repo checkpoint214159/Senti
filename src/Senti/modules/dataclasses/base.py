@@ -59,7 +59,6 @@ def tensor_node(cls):
     cls = state_node(cls)
     
     def detach(self):
-        print('detach is running!')
         """Returns a new instance with all fields detached from the graph"""
         new_data = {f.name: getattr(self, f.name).detach() 
                     if hasattr(getattr(self, f.name), 'detach') 
@@ -70,7 +69,6 @@ def tensor_node(cls):
 
     def clone(self):
         """Deep clone of the tensors in the node"""
-        print('clone is running!')
         new_data = {f.name: getattr(self, f.name).clone() 
                     if hasattr(getattr(self, f.name), 'clone') 
                     else getattr(self, f.name) 

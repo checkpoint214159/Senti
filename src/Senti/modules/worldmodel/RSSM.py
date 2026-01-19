@@ -2,9 +2,9 @@ import torch
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.modules.dataclasses.categorical import GroupedCategoricalState
-from Senti.modules.dataclasses.normal import Normal
-from Senti.modules.dataclasses.pomdpstate import POMDPState
+from Senti.modules.dataclass.categorical import GroupedCategoricalState
+from Senti.modules.dataclass.normal import Normal
+from Senti.modules.dataclass.pomdpstate import POMDPState
 from Senti.registry import WORLDMODELS
 
 

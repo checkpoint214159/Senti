@@ -3,9 +3,9 @@ import torch
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.modules.dataclasses.normal import DepthNormal, Normal
-from Senti.modules.dataclasses.pomdpstate import POMDPState
-from Senti.modules.dataclasses.recurrentkvstate import RecurrentKVState
+from Senti.modules.dataclass.normal import DepthNormal, Normal
+from Senti.modules.dataclass.pomdpstate import POMDPState
+from Senti.modules.dataclass.recurrentkvstate import RecurrentKVState
 from Senti.modules.worldmodel.worldmodel import WorldModel
 from Senti.registry import WORLDMODELS
 

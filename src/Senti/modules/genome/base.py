@@ -6,12 +6,18 @@ from typing import List, Optional
 import pandas as pd
 import torch
 from omegaconf.dictconfig import DictConfig
+from torch import nn
 
 from Senti.registry import GENOME, SELECTOR
 
 
+class TensorModule(nn.Module):
+    def __init__(self, tensor: torch.Tensor):
+        super().__init__()
+        self.data = nn.Parameter(tensor)
+
 @GENOME.register_module()
-class BaseGenome:
+class BaseGenome(nn.Module):
     """
     Simple metadata driven BaseGenome class to wrap around a module. So that we can easily wrap around anything
     and call our methods for it
@@ -19,24 +25,9 @@ class BaseGenome:
     Also doesnt handle pathing or filenaming, that should be up to the Selector that is using us
     """
     def __init__(self,
-        gene: dict,
+        gene: nn.Module,
     ): 
-        # assert isinstance(gene, torch.nn.Module) or isinstance(gene, torch.Tensor), 'Assertion failed. ' \
-        #     'Got gene not as nn.Module nor Tensor.'
         self.gene = gene
-
-    # @property
-    # def gene_state(self):
-    #     if isinstance(self.gene, torch.nn.Module):
-    #         return self.gene.state_dict()
-    #     else:
-    #         return self.gene
-
-    def state_dict(self):
-        state = {
-            'gene': self.gene,
-        }
-        return state
 
     @classmethod
     def load(cls, state:dict):
@@ -162,7 +153,6 @@ class BaseSelector:
             fitness=fitness,
             generation=generation
         )
-
 
     def query(self, generation: Optional[int] = None, min_fitness: Optional[float] = None) \
         -> List[GenomeRecord]:

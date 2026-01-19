@@ -13,9 +13,9 @@ from typing import Generic, List, Type, TypeVar
 import torch
 from torch import nn
 
-from Senti.modules.dataclasses.base import BaseState
-from Senti.modules.dataclasses.normal import DepthNormal, Normal
-from Senti.modules.dataclasses.recurrentkvstate import RecurrentKVState
+from Senti.modules.dataclass.base import BaseState
+from Senti.modules.dataclass.normal import DepthNormal, Normal
+from Senti.modules.dataclass.recurrentkvstate import RecurrentKVState
 
 
 class POMDPState(BaseState):

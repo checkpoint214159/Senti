@@ -3,7 +3,7 @@ from collections import defaultdict
 
 import torch
 
-from Senti.modules.dataclasses.base import BaseState
+from Senti.modules.dataclass.base import BaseState
 
 
 class TensorMixin:

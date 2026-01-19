@@ -5,7 +5,10 @@ from typing import Any, Type
 import torch
 from torch import nn
 
-from Senti.modules.dataclasses.base import BaseState
+from Senti.modules.dataclass.action_policy import ActionPolicy
+from Senti.modules.dataclass.base import BaseState
+from Senti.modules.dataclass.obs import LatentObservation
+from Senti.modules.dataclass.pomdpstate import POMDPState
 
 
 class Cache:
@@ -338,4 +341,29 @@ class HierarchicalCache:
                 continue # key might not exist in all caches
         return results
     
-    
+
+def create_POMDP_cache():
+    observation_cache = Cache(value_type=dict)
+    action_cache = Cache(value_type=dict)
+
+    # caches that respect atomic timestep
+    latent_observation = CloneableCache(value_type=LatentObservation)
+    action_policy = CloneableCache(value_type=ActionPolicy)
+    states = StateCache(value_type=POMDPState)
+    _cache = HierarchicalCache(
+        cache_names={
+            'states': states,
+            'latent_obs': latent_observation,
+            'api': action_policy,
+        },
+        mapping={
+            's': 'states',
+            'h': 'states',
+            'z': 'states',
+            'lat_o': 'latent_obs',
+            'a': 'api',
+            'pi': 'api',
+        },
+    )
+
+    return observation_cache, action_cache, _cache

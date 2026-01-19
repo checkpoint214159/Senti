@@ -11,7 +11,7 @@ class Registry:
         def _register(c: Type):
             key = name or c.__name__
             if key in self._module_dict:
-                raise KeyError(f"{key} already registered in {self._name}")
+                print(f"{key} already registered in {self._name}")
             self._module_dict[key] = c
             return c
         return _register(cls) if cls is not None else _register

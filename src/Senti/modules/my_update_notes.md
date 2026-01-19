@@ -237,3 +237,93 @@ state-only action head: More habitual, learned in two places:
 1. During grounding step: tries to predict the static actions in the cache given the state beliefs. so for instance if previous steps beliefs have changed compared to where they are now, the action head must learn to use our new beliefs to predict the actions, which have remained static. is this part reasonable?
 2. During planning step: tries to predict the outcome of planning, i.e tries to predict the planned action.
 It is used in inference alongside the grounding wm to provide the priors that rollouts are EFE'd against.
+
+
+# 3/1/2026 Moving on
+
+I have successfully ran the agent pipeline end to end with non trivial actions and planning! Of course it wasnt trained, and there are some missing parts, but largely speaking the agent's initial structure is now there. Truly a Happy New Year to me, honestly I thought my yapping ass would somehow never even reach this point.
+
+Now onwards to setting up the other running and experimentation classes:
+
+I decided on this overall hierarchy:
+
+```
+Runner
+└── Experiment
+    ├── EnvHandler
+        └── Env
+    └── AgentHandler
+        └── Agent
+```
+with the following roles:
+
+Runner: 
+The supreme class. Defines how to initalize experiments, how to run them, what to track, what other integrations with other components outside our own Senti lib, etc etc.
+
+Experiment:
+A single instance of, well, an experiment. Can be started and terminated, handles tracking and logging functionality (but is probably told where or what object to log to, and doesnt hold this object in-knowledge). Manages the environment and the agent, via Handler classes so it does not access the underlying on its own.
+
+This is nice for experiments of course, but for demos this level of complication may not be required. we will see how first of course
+
+
+As a final note, as we begin to move into setting up experiment pipelines and whatnot, I will be re-doing the config system. omegaconf and yaml is fine for small scale stuff, but I really miss the OpenMMLabs configuration system, which was more pythonic, scalable, and well distributed. Without yoinking their code exactly, I will just Gemini a simpler version that does what I want it to do
+
+
+# 8/1/2026 What does it mean to init?
+
+For my agent, agent handler, etc etc, I think I might create a more complex init process. For one, a singular function 'init' is fine for simple modules and models, but for more complex systems, they might have multiple 'build' stages. I think I saw something like this in the mmengine system too, where they had a dedicated build, load, etc etc.
+
+Currently plans for Agent and AgentHandler class:
+
+1. Configure & Build: Pass in the configuration object to the system, and __init__ calls build on all components
+
+2. Load: If required, load in from a checkpoint.
+
+I think I have to establish some kind of Top-down process definition to keep whatever flow I am using well-understood:
+
+Experiment:
+1. Run the following for N rounds
+2. Init a loading strategy
+3. Load in AgentHandler object (and env)
+4. After a run, calculate score and perform selection. This involves generating a new loading strategy which will replace the old one
+5. Repeat 2,3,4 , except 2 is now the new strategy
+
+This means that 
+
+
+# 11/1/2026 Some more on Experiment loading and saving
+
+Phases:
+
+Draft -> Pre-deployment -> Deployment -> Evaluation -> Harvest
+
+Draft (Selection & Strategy)
+- Selector decided 'which genome' and 'which agents under that genome'.
+- Produces a GenotypeStrategy mapping
+
+Pre-deployment:
+- Experiment orchestrator applies pre-deployment actions, e.g mutates MutateGenome.
+- Logging ofc
+
+Deployment:
+- AgentHandler recieves the GenotypeStrategy and loads its parameters according to it. (slicing across a merged tensor group for instance)
+
+Evaluation:
+- Post environment run, selector evaluates the outcomes of the game, which genomes did best, etc.
+
+Harvest:
+- Selector picks and saves according to some configuration it possesses.
+
+
+
+# 20/1/2026 Welcome back
+
+Been a while, currently progress is all on the Experiment.py. dont bother with creating server endpoint for env, just init it each time as a handler?
+
+Goals:
+1. Super basic env handler
+2. Super basic genome handler
+...
+3. One run through of the experiment
+3a. One run through of agent handler
+3b. Proper genome handler calls

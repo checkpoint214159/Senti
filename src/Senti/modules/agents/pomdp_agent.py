@@ -16,26 +16,25 @@ import cv2
 import numpy as np
 import requests
 import torch
-from omegaconf import OmegaConf
-from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.modules.dataclasses.action_policy import ActionPolicy
-from Senti.modules.dataclasses.normal import Normal
-from Senti.modules.dataclasses.obs import LatentObservation
-from Senti.modules.dataclasses.pomdpstate import POMDPState
+from Senti.modules.agents.base import BaseAgent
+from Senti.modules.config.config import ConfigDict
+from Senti.modules.dataclass.action_policy import ActionPolicy
+from Senti.modules.dataclass.normal import Normal
+from Senti.modules.dataclass.obs import LatentObservation
+from Senti.modules.dataclass.pomdpstate import POMDPState
 from Senti.modules.optim.dist_loss import DistributionLosses
 from Senti.modules.optim.optimregistry import OptimRegistry
+from Senti.modules.policy.policy_predictor import PolicyPredictor
 from Senti.modules.utils.caches import (
     Cache,
     CloneableCache,
     HierarchicalCache,
     StateCache,
 )
-from Senti.modules.utils.utils import nmmo_agent_check_config
-from Senti.registry import ACTION_HEADS, AUTOENCODERS, DECODERS, WORLDMODELS
+from Senti.registry import ACTION_HEADS, AGENTS, AUTOENCODERS, DECODERS, WORLDMODELS
 
-OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {}))
 
 def set_seed(seed: int = 42):
     random.seed(seed)                  # Python random module
@@ -77,154 +76,68 @@ setup_logging(log_file)
 
 logging.info("Logging is set up!")
 
-class Agent(nn.Module):
+@AGENTS.register_module()
+class Agent(BaseAgent):
     """
     An agent built on the concepts of active inference.
+    This can be constructed either as an agent with its own cache of beliefs, optimizers, etc,
+    or can be held as a mere module to encapsulate the various other things it uses.
+
+    The former should be done during development, whilst treating it as a module
+    renders the logic of 'what to do with agent modules' to a different component, like an AgentHandler,
+    which is usually what is best for a 'full run', during experimentation and evaluation
     """
 
     def __init__(self,
-        config: DictConfig,
+        config: ConfigDict,
+        as_module: bool = True,
+        preference_genome = None,
     ):
-        """
-
-        """
-        # admin stuff
-        super().__init__()
-        self.config = config
-        self.history = self.config.history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
-        self.device = torch.device(self.config.device)
-        self.batch_size = self.config.batch_size
-        self.inference_steps = self.config.inference_steps
-        self.param_learning_steps = self.config.param_learning_steps
-        self.planning_horizon = self.config.planning_horizon
-        self.n_policies = self.config.n_policies
-        self.planning_steps = self.config.planning_steps
-        self.policy_dim = self.config.policy_dim
-        # nmmo_agent_check_config(self.config)
-        
-        # caches in observation space
-        self.observation_cache = Cache(value_type=dict)
-        self.action_cache = Cache(value_type=dict)
-
-        # caches that respect atomic timestep
-        self.latent_observation = CloneableCache(value_type=LatentObservation)
-        self.action_policy = CloneableCache(value_type=ActionPolicy)
-        self.states = StateCache(value_type=POMDPState)
-        self._cache = HierarchicalCache(
-            cache_names={
-                'states': self.states,
-                'latent_obs': self.latent_observation,
-                'api': self.action_policy,
-            },
-            mapping={
-                's': 'states',
-                'h': 'states',
-                'z': 'states',
-                'lat_o': 'latent_obs',
-                'a': 'api',
-                'pi': 'api',
-            },
-        )
-
-        # dimensionality and tensor shapes
-        # self.state_depth = self.config.state_depth
-        self.a_dim = self.config.a_dim  # TODO move to action head
-
-        # other non-model modules
-        self.loss_module = DistributionLosses()
-        self.optimizer_registry = OptimRegistry()
+        # configuration
+        super().__init__(config, as_module)
 
         # encoder to encode incoming observation(s)
-        self.obs_autoencoder = AUTOENCODERS.build("NmmoObsAE", config.NmmoObsAE)
+        self.obs_autoencoder = AUTOENCODERS.build("NmmoObsAE", self.config.NmmoObsAE)
         logging.info("Successfully loaded NmmoAE")
-
         # maps latent observation to state, for now only takes latent obs of image
-        self.transition_model = WORLDMODELS.build("RSSM", config.transition_model)
+        self.transition_model = WORLDMODELS.build("RSSM", self.config.transition_model)
         logging.info("Successfully loaded transition_model")
-
-        self.grounding_wm = WORLDMODELS.build("RSSM", config.grounding_wm)
+        self.grounding_wm = WORLDMODELS.build("RSSM", self.config.grounding_wm)
         logging.info("Successfully loaded grounding_wm")
+        self.zh_o = DECODERS.build("LatentObsDecoder", self.config.zh_o)
+        # self.preference_head = PREFERENCES.build("BasePreferenceHead", self.config.pref)
+        self.habitual_head = ACTION_HEADS.build("ActionHead", self.config.habitual_head)
+        self.deliberative_head = ACTION_HEADS.build("FiLMActionHead", self.config.deliberative_head)
+        self.policy_predictor = PolicyPredictor(config=self.config.policy_predictor)
 
-        self.zh_o = DECODERS.build("LatentObsDecoder", config.zh_o)
-        # self.preference_head = PREFERENCES.build("BasePreferenceHead", config.pref)
-
-        self.habitual_head = ACTION_HEADS.build("ActionHead", config.habitual_head)
-        self.deliberative_head = ACTION_HEADS.build("FiLMActionHead", config.deliberative_head)
-
-        self.genome = torch.randn(
-            1, self.config.preferences_dim,
-        ).unsqueeze(0).repeat(self.batch_size, 1, 1).to(self.device)
-        # TODO make this genome conditioned. Until then treat it as a random init normal
-        self.policy = Normal(
-            z_mean_shape=(self.batch_size, 1, self.config.policy_dim,),
-            z_log_std_shape=(self.batch_size, 1, self.config.policy_dim,)
-        )
-
-        # optimization
-        inference_params = (
-            list(self.obs_autoencoder.parameters()) + 
-            list(self.transition_model.parameters()) +
-            list(self.zh_o.parameters()) +
-            list(self.deliberative_head.parameters())
-        )
-        kwargs = dict(lr=0.005)
-        self.optimizer_registry.register_optim(
-            'inference', inference_params, **kwargs
-        )
-
-        wm_params = (
-            list(self.grounding_wm.parameters()) +
-            list(self.habitual_head.parameters())
-        )
-        kwargs = dict(lr=0.005)
-        self.optimizer_registry.register_optim(
-            'wm', wm_params, **kwargs
-        )
-
-        policy_params = (
-            list(self.policy.parameters())
-        )
-        kwargs = dict(lr=0.005)
-        self.optimizer_registry.register_optim(
-            'policy', policy_params, **kwargs
-        )
-
-        self.atomic_timestep = config.atomic_timestep
-        self.discrete_step = config.discrete_step
-        self.atomic_count = 0
-        self.curr_timestep = 1
-        self.curr_h_timestep = lambda: self.curr_h_timestep - 1  # additional variable to help with understanding.
-        # for each node of state, we store h_t and z_t+1. this semantic is for convenience passing into the
-        # world models, but it also makes sense because it predicts h_t+1 and z_t+2, which we can save into
-        # a statenode once more.
-        self.atomic_window = range(self.atomic_count - self.history, self.atomic_count)
-        
+        self.atomic_timestep = self.config.atomic_timestep
         self.timestep_conv = nn.Conv1d(
             in_channels=self.atomic_timestep,
             out_channels=1,
             kernel_size=1
         )  # to aggregate across observational timesteps into one singular timestep 
 
-        self.to(self.device)
-        self.prev_api: ActionPolicy | None = None
+        if self.as_module:
+            self.__init_as_module__(preference_genome)
 
-    def expose_morphology(self) -> dict:
+
+    def expose_genome(self) -> dict:
         """
-        interface and exposes the contents of the agents deemed to be morphologically relevant
+        interface and exposes the contents of the agents deemed to be 
         """
         morphology = nn.ModuleDict({
             'transition_model': self.transition_model,
             'grounding_wm': self.grounding_wm,
+            'deliberative_head': self.deliberative_head,
+            'habitual_head': self.habitual_head,
             'obs_autoencoder': self.obs_autoencoder,
             'zh_o': self.zh_o,
+            'timestep_conv': self.timestep_conv,
+            'policy_predictor': self.policy_predictor,
         })
 
-        return morphology.state_dict()
-    
-    def expose_pref(self) -> dict:
-        return {
-            'pref': self.genome,
-        }
+
+        return morphology
     
     def policy_init(self):
         # TODO: make it dependent on genome. for now just sample.
@@ -294,8 +207,7 @@ class Agent(nn.Module):
         if not self._cache.has_container('states', atomic_t):
             obs: torch.Tensor = self._cache.get_semantic('lat_o', atomic_t)
             self.update_states_cache(atomic_t, obs)
-        
-                
+
 
     def belief_optim_wrap(self):
         """
@@ -307,8 +219,8 @@ class Agent(nn.Module):
         self.optimizer_registry.register_optim('states_cache', all_params, optim_name='SGD', **kwargs)
 
     def forward(self,
-                observations: dict,
-            ):
+        observations: dict,
+        ):
         """
         Order of execution:
             Inference:
@@ -554,7 +466,7 @@ class Agent(nn.Module):
 
         old_policy = self.policy.clone(detach=True)
 
-        for i in range(self.planning_steps):
+        for i in range(self.planning_cycles):
             self.planning_step(seed_s, seed_a, prior_z)
 
         # lastly, sample updated policy
@@ -659,6 +571,92 @@ class Agent(nn.Module):
         """helper method to lazily create empty a."""
         return torch.zeros(self.batch_size, 1, self.a_dim,).to(self.device) # TODO fix the magic number. it really is supposed to be 1,
             # to represent the singular atomic timestep, but this is horrible practice.
+
+    
+    def __init_as_module__(self, preference_genome):   
+        assert preference_genome is not None, 'Assertion failed. If running this Agent not as a mere container, you must pass in ' \
+            'you must pass in a preference genome tensor.'
+        self.genome = preference_genome.to(self.device)
+
+        # caches in observation space
+        self.observation_cache = Cache(value_type=dict)
+        self.action_cache = Cache(value_type=dict)
+
+        # caches that respect atomic timestep
+        self.latent_observation = CloneableCache(value_type=LatentObservation)
+        self.action_policy = CloneableCache(value_type=ActionPolicy)
+        self.states = StateCache(value_type=POMDPState)
+        self._cache = HierarchicalCache(
+            cache_names={
+                'states': self.states,
+                'latent_obs': self.latent_observation,
+                'api': self.action_policy,
+            },
+            mapping={
+                's': 'states',
+                'h': 'states',
+                'z': 'states',
+                'lat_o': 'latent_obs',
+                'a': 'api',
+                'pi': 'api',
+            },
+        )
+
+        # other non-model modules
+        self.loss_module = DistributionLosses()
+        self.optimizer_registry = OptimRegistry()
+
+        self.policy: Normal = self.policy_predictor(preference_genome)
+
+        # optimization
+        inference_params = (
+            list(self.obs_autoencoder.parameters()) + 
+            list(self.transition_model.parameters()) +
+            list(self.zh_o.parameters()) +
+            list(self.deliberative_head.parameters())
+        )
+        kwargs = dict(lr=0.005)
+        self.optimizer_registry.register_optim(
+            'inference', inference_params, **kwargs
+        )
+
+        wm_params = (
+            list(self.grounding_wm.parameters()) +
+            list(self.habitual_head.parameters())
+        )
+        kwargs = dict(lr=0.005)
+        self.optimizer_registry.register_optim(
+            'wm', wm_params, **kwargs
+        )
+
+        policy_params = (
+            list(self.policy.parameters())
+        )
+        kwargs = dict(lr=0.005)
+        self.optimizer_registry.register_optim(
+            'policy', policy_params, **kwargs
+        )
+
+        self.to(self.device)
+        self.history = self.config.history  # this means when inference is run, NOT inclusive of latest obs, there are these many past tiemsteps
+        self.device = torch.device(self.config.device)
+        self.batch_size = self.config.batch_size
+        self.inference_steps = self.config.inference_steps
+        self.param_learning_steps = self.config.param_learning_steps
+        self.planning_horizon = self.config.planning_horizon
+        self.n_policies = self.config.n_policies
+        self.planning_cycles = self.config.planning_cycles
+        self.policy_dim = self.config.policy_dim
+        
+        self.discrete_step = self.config.discrete_step
+        self.atomic_count = 0
+        self.curr_timestep = 1
+        self.curr_h_timestep = lambda: self.curr_h_timestep - 1  # additional variable to help with understanding.
+        # for each node of state, we store h_t and z_t+1. this semantic is for convenience passing into the
+        # world models, but it also makes sense because it predicts h_t+1 and z_t+2, which we can save into
+        # a statenode once more.
+        self.atomic_window = range(self.atomic_count - self.history, self.atomic_count)
+        self.prev_api: ActionPolicy | None = None
 
 
 # config = OmegaConf.load("/mnt/e/nmmo_actinf/Senti/src/Senti/config.yaml")

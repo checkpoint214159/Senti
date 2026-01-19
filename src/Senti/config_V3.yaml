@@ -4,90 +4,94 @@
 selector:
   root: /mnt/e/nmmo_actinf/Senti/temp
 
-agent:
-  gene_dim: 32
-  policy_dim: 16
-  n_policies: 4
+handler:
+  type: "Agent"  # TODO: list?
+  # TODO: these are attributes technically encapsulated within an agent
+  # however since our handler for now constructs all the agents
+  # with the same blueprint, this carries onto its config.
+  # will be challenging if our agents suddenly have different parameters
+  # this is a Feburary kinda thing yk
   history: 2
-  h_dim: [8, 8]
-  z_dim: 8
-  a_dim: 8
-  obs_dim: 10
-  state_depth: 3
   device: cuda
   batch_size: ${env.PLAYER_N}
   inference_steps: 25
   param_learning_steps: 5
   atomic_timestep: 2
   discrete_step: 2
-  history_size: ${eval:"${agent.atomic_timestep} * ${agent.history}"}
+  history_size: ${eval:"${agent.atomic_timestep} * ${handler.history}"}
   discrete_timestep: ${eval:"${agent.atomic_timestep} * ${agent.discrete_step}"}
   planning_horizon: 5
   planning_steps: 4
 
-  nmmo_obs_encoder:
-    name: NmmoEncoders
-    intermediate: 32
-    hidden_size: ${agent.obs_dim}
-    device: ${agent.device}
+  agent:
+    gene_dim: 32
+    policy_dim: 16
+    n_policies: 4
+    h_dim: [8, 8]
+    z_dim: 8
+    a_dim: 8
+    obs_dim: 10
+    state_depth: 3
 
-  nmmo_obs_decoder:
-    name: NmmoDecoders
-    intermediate: 32
-    hidden_size: ${agent.obs_dim}
-    device: ${agent.device}
+    nmmo_obs_encoder:
+      name: NmmoEncoders
+      intermediate: 32
+      hidden_size: ${agent.obs_dim}
+      device: ${agent.device}
 
-  NmmoObsAE:
-    encoder: ${agent.nmmo_obs_encoder}
-    decoder: ${agent.nmmo_obs_decoder}
+    nmmo_obs_decoder:
+      name: NmmoDecoders
+      intermediate: 32
+      hidden_size: ${agent.obs_dim}
+      device: ${agent.device}
 
-  zh_o:
-    h_dim: ${agent.h_dim}
-    z_dim: ${agent.z_dim}
-    obs_dim: ${agent.obs_dim}
-    hidden_dim: 20
+    NmmoObsAE:
+      encoder: ${agent.nmmo_obs_encoder}
+      decoder: ${agent.nmmo_obs_decoder}
 
-  # zAE:
-  #   obs_hid_size: ${agent.nmmo_obs_encoder.hidden_size}
-  #   z_dim: ${agent.z_dim}
+    zh_o:
+      h_dim: ${agent.h_dim}
+      z_dim: ${agent.z_dim}
+      obs_dim: ${agent.obs_dim}
+      hidden_dim: 20
 
-  transition_model:
-    h_dim: ${agent.h_dim}
-    z_dim: ${agent.z_dim}
-    a_dim: ${agent.a_dim}
-    external_dim: ${agent.obs_dim}
-    device: ${agent.device}
-    hidden_dim: 20
-    num_GRU_layers: ${agent.state_depth}
+    transition_model:
+      h_dim: ${agent.h_dim}
+      z_dim: ${agent.z_dim}
+      a_dim: ${agent.a_dim}
+      external_dim: ${agent.obs_dim}
+      device: ${agent.device}
+      hidden_dim: 20
+      num_GRU_layers: ${agent.state_depth}
 
-  deliberative_head:
-    h_dim: ${agent.h_dim}
-    z_dim: ${agent.z_dim}
-    a_dim: ${agent.a_dim}
-    gene_dim: ${agent.gene_dim}
-    policy_dim: ${agent.policy_dim}
+    deliberative_head:
+      h_dim: ${agent.h_dim}
+      z_dim: ${agent.z_dim}
+      a_dim: ${agent.a_dim}
+      gene_dim: ${agent.gene_dim}
+      policy_dim: ${agent.policy_dim}
 
-  grounding_wm:
-    h_dim: ${agent.h_dim}
-    z_dim: ${agent.z_dim}
-    a_dim: ${agent.a_dim}
-    external_dim: ${agent.gene_dim}
-    device: ${agent.device}
-    hidden_dim: 20
-    num_GRU_layers: ${agent.state_depth}
+    grounding_wm:
+      h_dim: ${agent.h_dim}
+      z_dim: ${agent.z_dim}
+      a_dim: ${agent.a_dim}
+      external_dim: ${agent.gene_dim}
+      device: ${agent.device}
+      hidden_dim: 20
+      num_GRU_layers: ${agent.state_depth}
 
-  habitual_head:
-    h_dim: ${agent.h_dim}
-    z_dim: ${agent.z_dim}
-    a_dim: ${agent.a_dim}
+    habitual_head:
+      h_dim: ${agent.h_dim}
+      z_dim: ${agent.z_dim}
+      a_dim: ${agent.a_dim}
 
-  pref:
-    h_dim: ${agent.h_dim}
-    z_dim: ${agent.z_dim}
+    pref:
+      h_dim: ${agent.h_dim}
+      z_dim: ${agent.z_dim}
 
-  policy_predictor:
-    gene_dim: ${agent.gene_dim}
-    policy_dim: ${agent.policy_dim}
+    policy_predictor:
+      gene_dim: ${agent.gene_dim}
+      policy_dim: ${agent.policy_dim}
 
 
 
@@ -159,7 +163,7 @@ env:
   NPC_SYSTEM_ENABLED: True
   PLAYER_BASE_HEALTH: 100
   PLAYER_HEALTH_INCREMENT: 0
-  PLAYER_N: 1
+  PLAYER_N: 8
   PLAYER_N_OBS: 100
   PLAYER_VISION_RADIUS: 7
   PRICE_N_OBS: 99

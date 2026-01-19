@@ -1,6 +1,8 @@
 
 from .registry import Registry
 
+AGENTS = Registry('agents')
+
 AUTOENCODERS = Registry('autoencoders')
 
 ENCODERS = Registry('encoders')

@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.distributions import Independent
 
-from Senti.modules.dataclasses.base import BaseState
+from Senti.modules.dataclass.base import BaseState
 from Senti.modules.optim.base import BaseLoss
 
 

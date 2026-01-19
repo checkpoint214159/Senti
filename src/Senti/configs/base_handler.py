@@ -2,7 +2,9 @@ _base_ = [
     './base_selector.py'
 ]
 
+# meta shared hyperparams
 device = 'cuda'
+atomic_timestep = 2
 gene_dim = 32
 policy_dim = 16
 n_policies = 4
@@ -12,14 +14,20 @@ a_dim = 8
 obs_dim = 10
 state_depth = 3
 hidden_dim_internal = 20
-history = 5
-atomic_timestep = 2
-batch_size=8
-inference_steps=10
-param_learning_steps=2
-planning_horizon=5
-planning_cycles=3
-discrete_step=2
+
+n_teams = 8
+team_agents = 1
+
+play_rounds = 8
+
+
+selector = dict(
+    root="/mnt/e/nmmo_actinf/Senti/temp",
+    seed=dict(
+        gene_dim=gene_dim
+    )
+)
+
 
 nmmo_obs_encoder = dict(
     name='NmmoEncoders',
@@ -36,40 +44,17 @@ nmmo_obs_decoder = dict(
 )
 
 agent = dict(
-    gene_dim=gene_dim,
-    policy_dim=policy_dim,
-    n_policies=n_policies,
-    h_dim=h_dim,
-    z_dim=z_dim,
-    a_dim=a_dim,
-    obs_dim=obs_dim,
-    state_depth=state_depth,
-    device=device,
-    history=history,
     atomic_timestep=atomic_timestep,
-    batch_size=batch_size,
-    inference_steps=inference_steps,
-    param_learning_steps=param_learning_steps,
-    planning_horizon=planning_horizon,
-    planning_cycles=planning_cycles,
-    discrete_step=discrete_step,
-
-    # Nested Model Components
-    nmmo_obs_encoder=nmmo_obs_encoder,
-    nmmo_obs_decoder=nmmo_obs_decoder,
-    
     NmmoObsAE=dict(
         encoder=nmmo_obs_encoder,
         decoder=nmmo_obs_decoder
     ),
-
     zh_o=dict(
         h_dim=h_dim,
         z_dim=z_dim,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim_internal
     ),
-
     transition_model=dict(
         h_dim=h_dim,
         z_dim=z_dim,
@@ -79,7 +64,6 @@ agent = dict(
         hidden_dim=hidden_dim_internal,
         num_GRU_layers=state_depth
     ),
-
     deliberative_head=dict(
         h_dim=h_dim,
         z_dim=z_dim,
@@ -87,7 +71,6 @@ agent = dict(
         gene_dim=gene_dim,
         policy_dim=policy_dim
     ),
-
     grounding_wm=dict(
         h_dim=h_dim,
         z_dim=z_dim,
@@ -97,20 +80,46 @@ agent = dict(
         hidden_dim=hidden_dim_internal,
         num_GRU_layers=state_depth
     ),
-
     habitual_head=dict(
         h_dim=h_dim,
         z_dim=z_dim,
         a_dim=a_dim
     ),
-
     pref=dict(
         h_dim=h_dim,
         z_dim=z_dim
     ),
-
     policy_predictor=dict(
         gene_dim=gene_dim,
         policy_dim=policy_dim
     )
 )
+
+handler = dict(
+    name='POMDPAgentHandler',
+    agent_type='Agent',
+    device='cuda',
+    gene_dim=gene_dim,
+    batch_size=n_teams * team_agents,
+    inference_steps=25,
+    param_learning_steps=5,
+    atomic_timestep=atomic_timestep,
+    discrete_step=2,
+    history=2,
+    planning_horizon=5,
+    planning_steps=4,
+    agent=agent,
+)
+
+env = dict()
+
+experiment = dict(
+    rounds=play_rounds,
+    handler=handler,
+    env=env,
+)
+
+
+
+
+

@@ -5,7 +5,7 @@ from omegaconf.dictconfig import DictConfig
 from torch import nn
 
 from Senti.modules.action_heads.external import BaseActionHead, ExternalActionHead
-from Senti.modules.dataclasses.pomdpstate import POMDPState
+from Senti.modules.dataclass.pomdpstate import POMDPState
 from Senti.registry import ACTION_HEADS
 
 

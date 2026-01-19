@@ -3,7 +3,7 @@ from typing import Any
 import torch
 from torch.distributions import Distribution, kl_divergence
 
-from Senti.modules.dataclasses.normal import BaseNormal
+from Senti.modules.dataclass.normal import BaseNormal
 from Senti.modules.optim.base import BaseLoss
 
 

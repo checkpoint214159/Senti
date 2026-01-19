@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Independent, OneHotCategorical
 
-from Senti.modules.dataclasses.base import BaseState
+from Senti.modules.dataclass.base import BaseState
 
 
 class GroupedCategoricalState(BaseState):

@@ -2,9 +2,9 @@ from dataclasses import field
 
 import torch
 
-from Senti.modules.dataclasses.base import BaseState, state_node
-from Senti.modules.dataclasses.categorical import GroupedCategoricalState
-from Senti.modules.dataclasses.normal import Normal
+from Senti.modules.dataclass.base import BaseState, state_node
+from Senti.modules.dataclass.categorical import GroupedCategoricalState
+from Senti.modules.dataclass.normal import Normal
 
 
 @state_node

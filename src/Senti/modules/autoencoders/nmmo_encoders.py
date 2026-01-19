@@ -1,11 +1,13 @@
 # maps from latent state to each action bucket in nmmo
 # temporarily use nmmo_baseliens/agent_zoo/yaofeng
 
+import einops
 import pufferlib
 import pufferlib.emulation
 import pufferlib.models
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from nmmo.entity.entity import EntityState
 from torch import nn
 
@@ -38,9 +40,10 @@ class NmmoEncoders(nn.Module):  # TODO: change Policy from pufferlib for now?
         orthogonal_init(self.value_head)
 
     def forward(self, env_outputs: dict):
+        # print('env_outputs["Tile"] shape', env_outputs["Tile"].shape)
         tile = self.tile_encoder(env_outputs["Tile"])
         player_embeddings, my_agent = self.player_encoder(
-            env_outputs["Entity"], env_outputs["AgentId"][:, 0]
+            env_outputs["Entity"], env_outputs["AgentId"][..., 0]
         )
 
         item_embeddings = self.item_encoder(env_outputs["Inventory"])
@@ -93,12 +96,13 @@ class TileEncoder(torch.nn.Module):
         orthogonal_init(self.tile_fc)
 
     def forward(self, tile):
-        tile_position = tile[:, :, :2] / 128 - 0.5
-        tile_type = tile[:, :, 2].long().clip(0, 15)
+        assert tile.ndim >= 2
+        tile_position = tile[..., :2] / 128 - 0.5
+        tile_type = tile[..., 2].long().clip(0, 15)
         tile = torch.cat((tile_position, self.type_embedding(tile_type)), dim=-1)
-        agents, _, features = tile.shape
-        # print('tile.shape, agents is first', tile.shape)
-        tile = tile.transpose(1, 2).view(agents, features, 15, 15).float()
+        # dont we love hardcoded values?
+        tile = rearrange(tile, '... (h1 h2) f -> ... f h1 h2', h1=15, h2=15) \
+            .float()
         
         latent = F.relu(self.tile_resnet(tile))
         # print('self.tile_resnet(tile)', latent.shape)
@@ -106,7 +110,7 @@ class TileEncoder(torch.nn.Module):
         # print('conv1', latent.shape)
         latent = F.relu(self.tile_conv_2(latent))
         # print('conv2', latent.shape)
-        latent = latent.contiguous().view(agents, -1)
+        latent = rearrange(latent.contiguous(), '... f h1 h2 -> ... (f h1 h2)')
         # print('configuous view reshape', latent.shape)
         latent = F.relu(self.tile_norm(self.tile_fc(latent)))
         # print('fc and norm', latent.shape)
@@ -137,7 +141,7 @@ class PlayerEncoder(torch.nn.Module):
     def __init__(self, intermediate, hidden_size):
         super().__init__()
         self.entity_dim = 31  # once again hardcoded for now
-        self.player_offset = torch.tensor([i * 256 for i in range(self.entity_dim)])
+        self.player_offset = torch.tensor([i * 256 for i in range(self.entity_dim)])  # learnt embeddings
         self.embedding = torch.nn.Embedding(self.entity_dim * 256, 32)
 
         self.EntityId = EntityState.State.attr_name_to_col["id"]
@@ -159,26 +163,31 @@ class PlayerEncoder(torch.nn.Module):
         orthogonal_init(self.my_agent_fc)
 
     def forward(self, agents, my_id):
+        """
+        TODO document this
+        shapes:
+        agents: [..., num_possible_agents (check config, try PLAYER_N_OBS?), entity_dim]
+        """
         # Pull out rows corresponding to the agent
-        agent_ids = agents[:, :, EntityId]
-        mask = (agent_ids == my_id.unsqueeze(1)) & (agent_ids != 0)
-        mask = mask.int()
-        row_indices = torch.where(
-            mask.any(dim=1), mask.argmax(dim=1), torch.zeros_like(mask.sum(dim=1))
-        )
+        agent_ids = agents[..., :, EntityId]
+        mask = (agent_ids == my_id.unsqueeze(-1)) & (agent_ids != 0)
+        self_mask = mask.unsqueeze(-1).float()
 
-        batch, agent, _ = agents.shape
-        agent_embeddings = self.embedding(
-            (agents[:, :, self.embedding_idx].long() + 256).clip(0, 511)
-        ).reshape(batch, agent, -1)
+        raw_indices = (agents[..., self.embedding_idx].long() + 256).clip(0, 511)
+        embedded_feats = self.embedding(raw_indices)
+        agent_embeddings = rearrange(embedded_feats, '... F E -> ... (F E)')
+
         agent_embeddings = torch.cat(
-            (agent_embeddings, agents[:, :, self.no_embedding_idx]), dim=-1
+            (agent_embeddings, agents[..., :, self.no_embedding_idx]), dim=-1
         ).float()
+
         agent_embeddings = F.relu(self.agent_mlp(agent_embeddings))
 
-        my_agent_embeddings = agent_embeddings[torch.arange(agents.shape[0]), row_indices]
+        my_agent_embeddings = torch.sum(agent_embeddings * self_mask, dim=-2)
+
         agent_embeddings = F.relu(self.agent_norm(self.agent_fc(agent_embeddings)))
         my_agent_embeddings = F.relu(self.my_agent_norm(self.my_agent_fc(my_agent_embeddings)))
+
         return agent_embeddings, my_agent_embeddings
 
 
@@ -215,12 +224,11 @@ class ItemEncoder(torch.nn.Module):
             self.continuous_scale = self.continuous_scale.to(items.device)
 
         # Embed each feature separately
-        discrete = items[:, :, self.discrete_idxs] + self.discrete_offset
+        discrete = items[..., self.discrete_idxs] + self.discrete_offset
         discrete = self.embedding(discrete.long().clip(0, 255))
-        batch, item, attrs, embed = discrete.shape
-        discrete = discrete.view(batch, item, attrs * embed)
+        discrete = rearrange(discrete, '... I A E -> ... I (A E)')
 
-        continuous = items[:, :, self.continuous_idxs] / self.continuous_scale
+        continuous = items[..., self.continuous_idxs] / self.continuous_scale
 
         item_embeddings = torch.cat([discrete, continuous], dim=-1).float()
         item_embeddings = F.relu(self.item_norm(self.item_mlp(item_embeddings)))
@@ -235,8 +243,7 @@ class InventoryEncoder(torch.nn.Module):
         orthogonal_init(self.fc)
 
     def forward(self, inventory):
-        agents, items, hidden = inventory.shape
-        inventory = inventory.view(agents, items * hidden)
+        inventory = rearrange(inventory, '... I H -> ... (I H)')
         return F.relu(self.norm(self.fc(inventory)))
 
 

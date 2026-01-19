@@ -52,4 +52,14 @@ class Config:
             if isinstance(v, dict) and k in d and isinstance(d[k], dict):
                 Config._recursive_update(d[k], v)
             else:
-                d[k] = ConfigDict(v) if isinstance(v, dict) else v
+                d[k] = Config._to_config_dict(v)
+
+    @staticmethod
+    def _to_config_dict(obj):
+        """Recursively converts dicts to ConfigDicts."""
+        if isinstance(obj, dict):
+            return ConfigDict({k: Config._to_config_dict(v) for k, v in obj.items()})
+        elif isinstance(obj, list):
+            return [Config._to_config_dict(v) for v in obj]
+        else:
+            return obj

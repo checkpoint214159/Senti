@@ -18,13 +18,6 @@ class Genome(BaseGenome):
         
         self.morphology = morphology 
         self.preferences = preferences
-
-    def state_dict(self):
-        state = {
-            'morphology': self.morphology.state_dict(),
-            'preferences': self.preferences.state_dict(),
-        }
-        return state
     
     @classmethod
     def load(cls, state:dict):

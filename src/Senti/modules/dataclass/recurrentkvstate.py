@@ -4,7 +4,7 @@ from typing import Iterable
 import torch
 from torch import nn
 
-from Senti.modules.dataclasses.normal import BaseNormal, Normal
+from Senti.modules.dataclass.normal import BaseNormal, Normal
 
 
 class RecurrentKVState(BaseNormal):

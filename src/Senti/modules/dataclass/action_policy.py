@@ -2,7 +2,7 @@ from dataclasses import field
 
 import torch
 
-from Senti.modules.dataclasses.base import tensor_node
+from Senti.modules.dataclass.base import tensor_node
 
 
 @tensor_node

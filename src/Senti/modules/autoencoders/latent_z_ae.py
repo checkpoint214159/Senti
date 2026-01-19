@@ -2,7 +2,7 @@ import torch
 from omegaconf.dictconfig import DictConfig
 from torch import nn
 
-from Senti.modules.dataclasses.normal import Normal
+from Senti.modules.dataclass.normal import Normal
 from Senti.registry import AUTOENCODERS
 
 from .base import BaseAutoEncoder

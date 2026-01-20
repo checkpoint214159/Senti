@@ -1,7 +1,6 @@
-from Senti.registry import AGENTS
 from Senti.modules.agents.base import GenotypeStrategy
-
 from Senti.modules.config.config import Config
+from Senti.registry import AGENTS, ENVS
 
 
 class Experiment:
@@ -21,11 +20,14 @@ class Experiment:
         # self.agent_handler_config 
         # self.env_handler_config
 
-        self.agent_handler = AGENTS.build('POMDPAgentHandler', 
-            config=self.config.handler,
+        self.agent_handler = AGENTS.build(self.config.agent_handler.name, 
+            config=self.config.agent_handler,
         )
 
-        self.env_handler = None  # toy value for now
+        self.env_handler = ENVS.build(self.config.env_handler.name,
+            config=self.config.env_handler
+        )
+
         self.genome_handler = None  # TODO create a class for this
 
     def setup(self, prev_strategy=None):
@@ -38,18 +40,17 @@ class Experiment:
         # TODO build env and genome handler soon
 
         return strategy
-
+    
         
     def run(self):
         for i in range(self.rounds):
 
-            obs = self.env_handler.reset()
+            data = self.env_handler.reset()
             # obs, rewards, terimated, truncated, infos = self.env_handler.step()
             while self.env_handler.is_valid():
-                actions = self.agent_handler.forward(obs)
-                obs, rewards, terimated, truncated, infos = self.env_handler.step(actions)
+                actions = self.agent_handler.forward(data['obs'])
+                data = self.env_handler.step(actions)
 
-            
             self.strategy=  self.strategy_factory(prev_strategy=self.strategy)
 
     def strategy_factory(self, prev_strategy: GenotypeStrategy | None = None):

@@ -321,9 +321,13 @@ Harvest:
 Been a while, currently progress is all on the Experiment.py. dont bother with creating server endpoint for env, just init it each time as a handler?
 
 Goals:
-1. Super basic env handler
+1. Super basic env handler -> No parallel env for now, just vv simple
 2. Super basic genome handler
 ...
 3. One run through of the experiment
 3a. One run through of agent handler
 3b. Proper genome handler calls
+
+There is some trouble with whether Senti, this package that mainly houses model + pipeline code, should also house environment starting and stepping, if not how else will the experiment 'build' the environment handler in its scope? I think the answer for now, ignoring the practicalities of parallel envs and whatnot, is to still have the actual environment as a service hosted by another package. Then the 'env handler' simply manages communication between the service, and the experiment. This also allows us to be flexible to the possibility of the environments not running on the local machine.
+
+

@@ -58,7 +58,6 @@ def nested_stack(items, dim=0):
 @AGENTS.register_module()
 class POMDPAgentHandler(BaseAgentHandler):
 
-
     def __init__(self,
         config: DictConfig,
     ):
@@ -81,9 +80,7 @@ class POMDPAgentHandler(BaseAgentHandler):
         self._cache = _cache
         self.prev_api: ActionPolicy | None = None
 
-
-    def load(self,
-        strategy: dict | GenotypeStrategy):
+    def load(self, strategy: dict | GenotypeStrategy):
         super().load(strategy)
 
         with _reparametrize_module(self.agent_blueprint, self.merged_params):

@@ -7,6 +7,8 @@ AUTOENCODERS = Registry('autoencoders')
 
 ENCODERS = Registry('encoders')
 
+ENVS = Registry('envs')
+
 DECODERS = Registry('decoders')
 
 WORLDMODELS = Registry('worldmodels')

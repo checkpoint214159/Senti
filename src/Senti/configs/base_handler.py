@@ -95,7 +95,7 @@ agent = dict(
     )
 )
 
-handler = dict(
+agent_handler = dict(
     name='POMDPAgentHandler',
     agent_type='Agent',
     device='cuda',
@@ -111,12 +111,15 @@ handler = dict(
     agent=agent,
 )
 
-env = dict()
+env_handler = dict(
+    name='NMMOEnvHandler',
+    addr='http://localhost:8000'
+)
 
 experiment = dict(
     rounds=play_rounds,
-    handler=handler,
-    env=env,
+    agent_handler=agent_handler,
+    env_handler=env_handler,
 )
 
 

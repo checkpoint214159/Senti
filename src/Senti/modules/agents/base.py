@@ -130,8 +130,7 @@ class BaseAgentHandler:
         self.device = torch.device(config.device)
 
         self.agent_blueprint = AGENTS.build(
-            self.config.agent_type, self.config.agent, as_module=True)
-
+            self.config.agent_type, self.config.agent, as_module=False)
 
 
     def load(self,

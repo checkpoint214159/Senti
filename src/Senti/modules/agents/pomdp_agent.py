@@ -120,7 +120,6 @@ class Agent(BaseAgent):
         if self.as_module:
             self.__init_as_module__(preference_genome)
 
-
     def expose_genome(self) -> dict:
         """
         interface and exposes the contents of the agents deemed to be 
@@ -574,8 +573,11 @@ class Agent(BaseAgent):
 
     
     def __init_as_module__(self, preference_genome):   
-        assert preference_genome is not None, 'Assertion failed. If running this Agent not as a mere container, you must pass in ' \
-            'you must pass in a preference genome tensor.'
+        assert preference_genome is not None, """
+        Assertion failed. If running this Agent as an individual module, \
+        that is, it posesses and uses its own cache,  \
+        you must pass in a preference genome tensor.
+        """
         self.genome = preference_genome.to(self.device)
 
         # caches in observation space

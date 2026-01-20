@@ -330,4 +330,4 @@ Goals:
 
 There is some trouble with whether Senti, this package that mainly houses model + pipeline code, should also house environment starting and stepping, if not how else will the experiment 'build' the environment handler in its scope? I think the answer for now, ignoring the practicalities of parallel envs and whatnot, is to still have the actual environment as a service hosted by another package. Then the 'env handler' simply manages communication between the service, and the experiment. This also allows us to be flexible to the possibility of the environments not running on the local machine.
 
-
+Oh and also, im re-making the agent to have seperate stateful and state-less components. This is because having entirely functional functions is good for re-usability in the handler, and we can also make these use torch's functional call, and substitute parameters with that of provided by the agent handler. Extremely goated.

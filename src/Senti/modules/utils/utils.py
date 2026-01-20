@@ -24,6 +24,42 @@ from torch.utils.tensorboard import SummaryWriter
 
 to_np = lambda x: x.detach().cpu().numpy()
 
+
+def nested_stack(items, dim=0):
+    """
+    Stacks a list of nested structures (dicts/lists) along a new dimension.
+    
+    Args:
+        items: List of objects with the same nested structure.
+        dim: The dimension to stack along.
+    """
+    if not items:
+        return items
+    
+    first = items[0]
+    
+    # Base Case: If the items are Tensors, stack them
+    if isinstance(first, torch.Tensor):
+        thing = torch.stack(items, dim=dim)
+        return thing
+    
+    # Recursive Case: If items are Dictionaries
+    elif isinstance(first, dict):
+        return {
+            key: nested_stack([item[key] for item in items], dim=dim)
+            for key in first.keys()
+        }
+    
+    # Recursive Case: If items are Lists/Tuples
+    elif isinstance(first, (list, tuple)):
+        return [
+            nested_stack([item[i] for item in items], dim=dim)
+            for i in range(len(first))
+        ]
+    
+    # Fallback for non-tensor types (integers, strings, etc.)
+    return items
+
 def nmmo_agent_check_config(agent_config: DictConfig):
     """
     placeholder function to safety check the config for the use of nmmo agent

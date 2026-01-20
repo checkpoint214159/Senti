@@ -113,7 +113,8 @@ agent_handler = dict(
 
 env_handler = dict(
     name='NMMOEnvHandler',
-    addr='http://localhost:8000'
+    addr='http://localhost:8000',
+    device='cuda',
 )
 
 experiment = dict(

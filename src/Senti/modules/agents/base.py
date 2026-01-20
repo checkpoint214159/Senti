@@ -108,7 +108,7 @@ example_strategy = {
 
 
 @AGENTS.register_module()
-class BaseAgentHandler:
+class BaseAgentHandler(nn.Module):
     """
     AgentHandlers handles the definition of what agent type to use,
     what methods to run, loading + saving to checkpoint, etc, basically the logic
@@ -125,9 +125,10 @@ class BaseAgentHandler:
     def __init__(self,
         config: ConfigDict,
     ):
-
+        super().__init__()
         self.config = config
         self.device = torch.device(config.device)
+        self._param_buffer = nn.ParameterDict()
 
         self.agent_blueprint = AGENTS.build(
             self.config.agent_type, self.config.agent, as_module=False)
@@ -189,15 +190,21 @@ class BaseAgentHandler:
                         init_tensor[target_agents] = weights
             
             # register the final parameter post-loading and allocating
+            print('name before replce?', name)
             safe_name = name.replace('.', '_')
+            print('safe_name after replace?', safe_name)
             self._param_buffer[safe_name] = nn.Parameter(init_tensor)
+
+        self.to(self.device)
 
     @property
     def merged_params(self):
         start = time.time()
         params = {}
         for safe_name, param_data in self._param_buffer.items():
+            print('safe_name?', safe_name)
             orig_name = safe_name.replace('_', '.')
+            print('orig_name?', orig_name)
             
             if self.mode == "shared":
                 # indexing creates the virtual population batch [agent_count, ...]

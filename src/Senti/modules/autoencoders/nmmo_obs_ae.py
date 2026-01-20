@@ -24,12 +24,10 @@ class NmmoObsAE(BaseAutoEncoder):
         assert encoder_config.hidden_size == decoder_config.hidden_size
         self.hidden_size = encoder_config.hidden_size
 
-    def encode(self, data):
-        agent_embeddings, my_agent_embeddings = self.encoder(data)
-        # force as normal for now
-        # NOTE: LEARN VARIANCE BOOKMARK HERE
-        return agent_embeddings, my_agent_embeddings
+    # def encode(self, data):
+    #     agent_embeddings, my_agent_embeddings = self.encoder(data)
+    #     return agent_embeddings, my_agent_embeddings
 
-    def decode(self, data):
-        # TODO figure out the decoder version of this later.
-        raise NotImplementedError()
+    # def decode(self, data):
+    #     # TODO figure out the decoder version of this later.
+    #     raise NotImplementedError()

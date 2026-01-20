@@ -1,7 +1,9 @@
-from Senti.registry import ENVS
-from Senti.modules.config.config import Config
-import requests
 import json
+
+import requests
+
+from Senti.modules.config.config import Config
+from Senti.registry import ENVS
 
 
 @ENVS.register_module()
@@ -17,6 +19,7 @@ class BaseEnvHandler:
     def __init__(self, config: Config):
         self.config: Config = config
         self.addr = self.config.addr
+        self.device = self.config.device
         self.spaces = self.get_spaces()
 
     def _decode_response(self, data):

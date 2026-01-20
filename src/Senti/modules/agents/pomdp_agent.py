@@ -17,6 +17,7 @@ import numpy as np
 import requests
 import torch
 from torch import nn
+from torch.func import functional_call
 
 from Senti.modules.agents.base import BaseAgent
 from Senti.modules.config.config import ConfigDict
@@ -33,6 +34,7 @@ from Senti.modules.utils.caches import (
     HierarchicalCache,
     StateCache,
 )
+from Senti.modules.utils.utils import nested_stack
 from Senti.registry import ACTION_HEADS, AGENTS, AUTOENCODERS, DECODERS, WORLDMODELS
 
 
@@ -80,12 +82,15 @@ logging.info("Logging is set up!")
 class Agent(BaseAgent):
     """
     An agent built on the concepts of active inference.
-    This can be constructed either as an agent with its own cache of beliefs, optimizers, etc,
-    or can be held as a mere module to encapsulate the various other things it uses.
+    This can be constructed either as a module with its own cache of beliefs, optimizers, etc,
+    or can be held as a mere container to encapsulate the various other things it uses.
 
-    The former should be done during development, whilst treating it as a module
+    The former should be done during development, whilst treating it as a container
     renders the logic of 'what to do with agent modules' to a different component, like an AgentHandler,
-    which is usually what is best for a 'full run', during experimentation and evaluation
+    which is usually what is best for a 'full run', during experimentation and evaluation. May depreciate the former actually.
+
+    Another key features is that this is designed to express its computation with functional methods only.
+    In the latter case, this class should have no state, as state is handled by AgentHandler.
     """
 
     def __init__(self,
@@ -135,7 +140,6 @@ class Agent(BaseAgent):
             'policy_predictor': self.policy_predictor,
         })
 
-
         return morphology
     
     def policy_init(self):
@@ -153,21 +157,29 @@ class Agent(BaseAgent):
             prev_api = self.prev_api
         self._cache.set_container('api', atomic_t, prev_api)
 
+    def f_update_latent_obs(self, params:dict, obs_sequence: dict):
+        """
+        stateless functional call using arbitrary params
+        """
+        encoded_seq, _ = functional_call(
+            self.obs_autoencoder.encoder, params, obs_sequence
+        )
+        print('encoded_seq shape?', encoded_seq.shape)
+        atomic = functional_call(self.timestep_conv, params, encoded_seq)
+
+        return atomic.detach()
+
 
     def update_latent_obs(self, timesteps:list[int], atomic_t:int):
         """
         TODO: assumes that the obs encoder operates on each timestep seperately, i.e it doesnt support us just
         stacking the tensor and doing one pass through. this should change
         """
-        obs = []
-        for t in timesteps:
-            o = self.observation_cache.get(t)
-            agent_embed_normal, others = self.obs_autoencoder.encode(o)
-            obs.append(agent_embed_normal)
+        obs_list = [self.observation_cache.get(t) for t in timesteps]
+        obs_sequence = nested_stack(obs_list, dim=1)
 
-        stacked = torch.stack(obs, -2)
-        atomic = self.timestep_conv(stacked)
-        atomic = atomic.detach()   # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
+        atomic = self.f_update_latent_obs(dict(self.named_parameters()), obs_sequence)
+
         self._cache.set_container(
             'latent_obs', atomic_t, LatentObservation(lat_o=atomic.to(self.device)))
 

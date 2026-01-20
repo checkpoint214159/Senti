@@ -16,43 +16,8 @@ from Senti.modules.policy.policy_predictor import PolicyPredictor
 from Senti.modules.utils.caches import (
     create_POMDP_cache,
 )
+from Senti.modules.utils.utils import nested_stack
 from Senti.registry import AGENTS
-
-
-def nested_stack(items, dim=0):
-    """
-    Stacks a list of nested structures (dicts/lists) along a new dimension.
-    
-    Args:
-        items: List of objects with the same nested structure.
-        dim: The dimension to stack along.
-    """
-    if not items:
-        return items
-    
-    first = items[0]
-    
-    # Base Case: If the items are Tensors, stack them
-    if isinstance(first, torch.Tensor):
-        thing = torch.stack(items, dim=dim)
-        return thing
-    
-    # Recursive Case: If items are Dictionaries
-    elif isinstance(first, dict):
-        return {
-            key: nested_stack([item[key] for item in items], dim=dim)
-            for key in first.keys()
-        }
-    
-    # Recursive Case: If items are Lists/Tuples
-    elif isinstance(first, (list, tuple)):
-        return [
-            nested_stack([item[i] for item in items], dim=dim)
-            for i in range(len(first))
-        ]
-    
-    # Fallback for non-tensor types (integers, strings, etc.)
-    return items
 
 
 @AGENTS.register_module()
@@ -134,37 +99,46 @@ class POMDPAgentHandler(BaseAgentHandler):
         TODO: assumes that the obs encoder operates on each timestep seperately, i.e it doesnt support us just
         stacking the tensor and doing one pass through. this should change
         """
+        # obs_list = [self.observation_cache.get(t) for t in timesteps]
+        # # print('obs_List?', obs_list)
+        # obs_sequence = nested_stack(obs_list, dim=1)
+
+        # def single_encode(p, o):
+        #     module = self.agent_blueprint
+        #     with _reparametrize_module(module, p):
+        #         agent_embeds, _ = module.obs_autoencoder.encoder(o)
+        #     return agent_embeds
+        
+        # # in_dims: (where to slice params, where to slice obs)
+        # #
+        # v_time = vmap(single_encode, in_dims=(None, 0))
+        # v_population = vmap(v_time, in_dims=(0, 0))
+
+        # stacked_encoded = v_population(self.merged_params, obs_sequence)
+        
+        # def run_conv(p, x):
+        #     module = self.agent_blueprint
+        #     with _reparametrize_module(module, p):
+        #         atomic = module.timestep_conv(x)
+        #     return atomic
+
+        # v_conv = vmap(run_conv, in_dims=(0, 0))
+        # atomic = v_conv(self.merged_params, stacked_encoded).squeeze(1).detach()  # crucial detach
+        # # so we dont get double backward problem
         obs_list = [self.observation_cache.get(t) for t in timesteps]
-        # print('obs_List?', obs_list)
         obs_sequence = nested_stack(obs_list, dim=1)
 
-        def single_encode(p, o):
-            module = self.agent_blueprint
-            with _reparametrize_module(module, p):
-                agent_embeds, _ = module.obs_autoencoder.encoder(o)
-            return agent_embeds
-        
-        # in_dims: (where to slice params, where to slice obs)
-        #
-        v_time = vmap(single_encode, in_dims=(None, 0))
-        v_population = vmap(v_time, in_dims=(0, 0))
+        v_population = vmap(
+            self.agent_blueprint.f_update_latent_obs,
+            in_dims=(0, 0)
+        )
 
-        stacked_encoded = v_population(self.merged_params, obs_sequence)
-        
-        def run_conv(p, x):
-            module = self.agent_blueprint
-            with _reparametrize_module(module, p):
-                atomic = module.timestep_conv(x)
-            return atomic
-
-        v_conv = vmap(run_conv, in_dims=(0, 0))
-        atomic = v_conv(self.merged_params, stacked_encoded).squeeze(1).detach()  # crucial detach
-        # so we dont get double backward problem
-
+        population_atomic = v_population(self.merged_params, obs_sequence)
+        print('population_atomic shape?', population_atomic.shape)
         self._cache.set_container(
             'latent_obs', 
             atomic_t, 
-            LatentObservation(lat_o=atomic.to(self.device))
+            LatentObservation(lat_o=population_atomic.to(self.device))
         )
 
 

@@ -1,6 +1,7 @@
 from Senti.modules.agents.base import GenotypeStrategy
 from Senti.modules.config.config import Config
 from Senti.registry import AGENTS, ENVS
+from pathlib import Path
 
 
 class Experiment:
@@ -40,7 +41,7 @@ class Experiment:
         # TODO build env and genome handler soon
 
         return strategy
-    
+
         
     def run(self):
         for i in range(self.rounds):
@@ -68,7 +69,7 @@ class Experiment:
         )
 
         # inject fake checkpoint
-        example_strat.id_genotype[0] = "/mnt/e/nmmo_actinf/Senti/temp/test/test_gen12_fitness0.0.pth"
+        # example_strat.id_genotype[0] = Path("/mnt/e/nmmo_actinf/Senti/temp/test/test_gen12_fitness0.0.pth")
 
         return example_strat
     
@@ -79,4 +80,5 @@ if __name__ == "__main__":
     config = Config.fromfile(default)
     print('config.does_this_exist', config.does_this_exist)
     e = Experiment(config=config)
+    e.setup()
     e.run()

@@ -18,7 +18,7 @@ class PreferenceGenome(MutateGenome):
         assert self.gene['preferences'].ndim == 1, \
             'Dimension of preference tensor must be 1.'
             
-        self.gene_dim = self.gene['preferences'].shape[0]
+        self.pref_gene_dim = self.gene['preferences'].shape[0]
 
         
 

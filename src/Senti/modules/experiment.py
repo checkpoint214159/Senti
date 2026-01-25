@@ -1,7 +1,7 @@
-from Senti.modules.agents.base import GenotypeStrategy
-from Senti.modules.config.config import Config
-from Senti.registry import AGENTS, ENVS
 from pathlib import Path
+
+from Senti.modules.config.config import Config
+from Senti.registry import AGENTS, ENVS, GENOME
 
 
 class Experiment:
@@ -14,12 +14,7 @@ class Experiment:
     def __init__(self, config: Config):
 
         self.config = config
-        self.rounds = config.play_rounds
-        self.n_teams = config.n_teams
-        self.team_agents = config.team_agents
-        
-        # self.agent_handler_config 
-        # self.env_handler_config
+        self.rounds = config.rounds
 
         self.agent_handler = AGENTS.build(self.config.agent_handler.name, 
             config=self.config.agent_handler,
@@ -29,13 +24,15 @@ class Experiment:
             config=self.config.env_handler
         )
 
-        self.genome_handler = None  # TODO create a class for this
+        self.genome_handler = GENOME.build(self.config.genome_handler.name,
+            config=self.config.genome_handler
+        )
 
     def setup(self, prev_strategy=None):
         """
         Seperate setup stage to initialize strategies, tracking genomes, logging, etc.
         """
-        strategy = self.strategy_factory(prev_strategy=prev_strategy)
+        strategy = self.genome_handler.strategy_factory(prev_strategy=prev_strategy)
         self.agent_handler.load(strategy)
 
         # TODO build env and genome handler soon
@@ -54,24 +51,6 @@ class Experiment:
 
             self.strategy=  self.strategy_factory(prev_strategy=self.strategy)
 
-    def strategy_factory(self, prev_strategy: GenotypeStrategy | None = None):
-        """
-        currently only inits an empty strategy. TODO make it generalise to groups that
-        aren't of even size?
-        """
-
-        example_strat = GenotypeStrategy(
-            id_genotype={i: None for i in range(self.n_teams)},
-            agents={
-                i: list(range(i * self.team_agents, (i + 1) * self.team_agents))
-                for i in range(self.n_teams)
-            },
-        )
-
-        # inject fake checkpoint
-        # example_strat.id_genotype[0] = Path("/mnt/e/nmmo_actinf/Senti/temp/test/test_gen12_fitness0.0.pth")
-
-        return example_strat
     
 
 
@@ -79,6 +58,6 @@ if __name__ == "__main__":
     default = "/mnt/e/nmmo_actinf/Senti/src/Senti/configs/base_handler.py"
     config = Config.fromfile(default)
     print('config.does_this_exist', config.does_this_exist)
-    e = Experiment(config=config)
+    e = Experiment(config=config.experiment)
     e.setup()
     e.run()

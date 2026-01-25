@@ -24,7 +24,7 @@ handler:
   planning_steps: 4
 
   agent:
-    gene_dim: 32
+    pref_gene_dim: 32
     policy_dim: 16
     n_policies: 4
     h_dim: [8, 8]
@@ -68,14 +68,14 @@ handler:
       h_dim: ${agent.h_dim}
       z_dim: ${agent.z_dim}
       a_dim: ${agent.a_dim}
-      gene_dim: ${agent.gene_dim}
+      pref_gene_dim: ${agent.pref_gene_dim}
       policy_dim: ${agent.policy_dim}
 
     grounding_wm:
       h_dim: ${agent.h_dim}
       z_dim: ${agent.z_dim}
       a_dim: ${agent.a_dim}
-      external_dim: ${agent.gene_dim}
+      external_dim: ${agent.pref_gene_dim}
       device: ${agent.device}
       hidden_dim: 20
       num_GRU_layers: ${agent.state_depth}
@@ -90,7 +90,7 @@ handler:
       z_dim: ${agent.z_dim}
 
     policy_predictor:
-      gene_dim: ${agent.gene_dim}
+      pref_gene_dim: ${agent.pref_gene_dim}
       policy_dim: ${agent.policy_dim}
 
 

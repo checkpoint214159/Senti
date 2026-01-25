@@ -25,6 +25,13 @@ from torch.utils.tensorboard import SummaryWriter
 to_np = lambda x: x.detach().cpu().numpy()
 
 
+def param_traverse(prefix:str, params:dict):
+    return {
+        k[len(prefix):]: v for k, v in params.items()
+        if prefix in k
+    }
+
+
 def nested_stack(items, dim=0):
     """
     Stacks a list of nested structures (dicts/lists) along a new dimension.

@@ -66,10 +66,10 @@ class FiLMActionHead(ExternalActionHead):
         self.z_dim = config.z_dim
         self.state_dim = self.flattened_h + self.z_dim
         self.a_dim = self.config.a_dim
-        self.gene_dim = self.config.gene_dim
+        self.pref_gene_dim = self.config.pref_gene_dim
         self.policy_dim = self.config.policy_dim
 
-        self.concat_dim = self.gene_dim + self.policy_dim
+        self.concat_dim = self.pref_gene_dim + self.policy_dim
         self.modulator = nn.Sequential(
             nn.Linear(self.concat_dim, 2 * self.state_dim),
             nn.LayerNorm(2 * self.state_dim),

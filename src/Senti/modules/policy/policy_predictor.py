@@ -13,11 +13,11 @@ class PolicyPredictor(nn.Module):
         super().__init__()
         self.config = config
 
-        self.gene_dim = config.gene_dim
+        self.pref_gene_dim = config.pref_gene_dim
         self.policy_dim = config.policy_dim
 
         self.policy_predictor = nn.Sequential(
-            nn.Linear(self.gene_dim, 2 * self.policy_dim),
+            nn.Linear(self.pref_gene_dim, 2 * self.policy_dim),
             nn.LayerNorm(2 * self.policy_dim),
             nn.ReLU(),
             nn.Linear(2 * self.policy_dim, 2 * self.policy_dim)

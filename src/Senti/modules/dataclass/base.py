@@ -115,7 +115,7 @@ class BaseState(nn.Module, ABC):
             self._set_nested_attr(new_node, name, nn.Parameter(new_param))
 
         return new_node
-    
+
     # --------- canon interfaces for loss adaptation -------
 
     def as_distribution(self):

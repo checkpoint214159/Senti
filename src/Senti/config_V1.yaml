@@ -66,7 +66,7 @@ agent:
   action_head:
     x_dim: ${agent.h_dim}
     a_dim: ${agent.a_dim}
-    gene_dim: ${agent.preferences_dim}
+    pref_gene_dim: ${agent.preferences_dim}
     policy_dim: ${agent.policy_dim}
 
 

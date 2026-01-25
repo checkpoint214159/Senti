@@ -3,7 +3,7 @@ _base_ = [
 ]
 
 device = 'cuda'
-gene_dim = 32
+pref_gene_dim = 32
 policy_dim = 16
 n_policies = 4
 h_dim = [8, 8]
@@ -36,7 +36,7 @@ nmmo_obs_decoder = dict(
 )
 
 agent = dict(
-    gene_dim=gene_dim,
+    pref_gene_dim=pref_gene_dim,
     policy_dim=policy_dim,
     n_policies=n_policies,
     h_dim=h_dim,
@@ -84,7 +84,7 @@ agent = dict(
         h_dim=h_dim,
         z_dim=z_dim,
         a_dim=a_dim,
-        gene_dim=gene_dim,
+        pref_gene_dim=pref_gene_dim,
         policy_dim=policy_dim
     ),
 
@@ -92,7 +92,7 @@ agent = dict(
         h_dim=h_dim,
         z_dim=z_dim,
         a_dim=a_dim,
-        external_dim=gene_dim,
+        external_dim=pref_gene_dim,
         device=device,
         hidden_dim=hidden_dim_internal,
         num_GRU_layers=state_depth
@@ -110,7 +110,7 @@ agent = dict(
     ),
 
     policy_predictor=dict(
-        gene_dim=gene_dim,
+        pref_gene_dim=pref_gene_dim,
         policy_dim=policy_dim
     )
 )

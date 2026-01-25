@@ -331,3 +331,21 @@ Goals:
 There is some trouble with whether Senti, this package that mainly houses model + pipeline code, should also house environment starting and stepping, if not how else will the experiment 'build' the environment handler in its scope? I think the answer for now, ignoring the practicalities of parallel envs and whatnot, is to still have the actual environment as a service hosted by another package. Then the 'env handler' simply manages communication between the service, and the experiment. This also allows us to be flexible to the possibility of the environments not running on the local machine.
 
 Oh and also, im re-making the agent to have seperate stateful and state-less components. This is because having entirely functional functions is good for re-usability in the handler, and we can also make these use torch's functional call, and substitute parameters with that of provided by the agent handler. Extremely goated.
+
+
+# 22/1/2026
+
+Genotype loading:
+
+I think I will standarise as such:
+GenotypeStrategy: each id_genotype points only to one path. This means that all information related to an agent, is held in that file. Whether or not that pth file has model parameters only, preference genome only, or both, is outside the concern and scope of the Strategy, which should only care for being a "dictionary that maps agents to genotypes to paths".
+
+
+# 26/1/2026
+
+Grouping together these updates since they are kind of related in some vague way but also not really whatever
+
+1. Genotype strategy now maps to the actual Genome object
+2. Now genomes have a blueprint they validate against and mainly hold one data: state_dict. Ive implemented the ability to load from their state dict (mostly just a for loop checking for names)
+3. I have created a higher-order genome that encapsulates other genomes but also maintains flatness, merging the module blueprints of genomes togehter and also their state dicts, so the user can define their own agent handler load_from_genome method
+4. May have to seperate the dataclasses (POMDP, Normal, GroupedCategorical, etc) from my inner modules. vmap doesnt play well with these and only returns Tensors.

@@ -66,9 +66,22 @@ class RSSM(nn.Module):
             z_mean=mean,
             z_log_std=std,
             is_posterior=is_posterior,
-        ).to(self.device)
+        )
     
-    def forward(self, state: POMDPState, a:torch.Tensor): 
+    def forward(self, *args, mode: str = "full", **kwargs):
+        """
+        dispatch to various other forwards
+        """
+        if mode == "full":
+            return self.forward_full(*args, **kwargs)
+        elif mode == "h":
+            return self.forward_h(*args, **kwargs)
+        elif mode == "z":
+            return self.forward_z(*args, **kwargs)
+        else:
+            raise ValueError(f"Unknown RSSM mode: {mode}")
+        
+    def forward_full(self, state: POMDPState, a: torch.Tensor): 
         h, seed_next = self.forward_h(state, a)
         z = self.forward_z(h)
         return h, seed_next, z
@@ -104,9 +117,12 @@ class RSSM(nn.Module):
         Still accept the whole POMDPState as an argument, to keep abstraction neat
         """
         is_posterior = False
+        
         if external is not None:
             is_posterior = True
             h_t = h_t.as_tensor()
+            print('external shape?', external.shape)
+            print('h_t shape?', h_t.shape)
             x = torch.cat([h_t, external], dim=-1)
             z = self.z_given_h_ext(x)
         else:

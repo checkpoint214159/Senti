@@ -34,7 +34,7 @@ from Senti.modules.utils.caches import (
     HierarchicalCache,
     StateCache,
 )
-from Senti.modules.utils.utils import nested_stack
+from Senti.modules.utils.utils import nested_stack, param_traverse
 from Senti.registry import ACTION_HEADS, AGENTS, AUTOENCODERS, DECODERS, WORLDMODELS
 
 
@@ -95,11 +95,20 @@ class Agent(BaseAgent):
 
     def __init__(self,
         config: ConfigDict,
-        as_module: bool = True,
+        as_stateful: bool = True,
         preference_genome = None,
     ):
+        """
+        Args:
+            config: config
+            as_stateful: Whether or not to init this as a stateful object.
+                This means that it will manage its own cache, optimizer, etc.
+            preference_genome: Preference genome to init its own policy. Meant to
+                actually exist only when we are stateful. If not, policy prediction, cache generation
+                etc are not handled by us, because once again, not stateful!
+        """
         # configuration
-        super().__init__(config, as_module)
+        super().__init__(config, as_stateful)
 
         # encoder to encode incoming observation(s)
         self.obs_autoencoder = AUTOENCODERS.build("NmmoObsAE", self.config.NmmoObsAE)
@@ -115,6 +124,8 @@ class Agent(BaseAgent):
         self.deliberative_head = ACTION_HEADS.build("FiLMActionHead", self.config.deliberative_head)
         self.policy_predictor = PolicyPredictor(config=self.config.policy_predictor)
 
+        self.preference_genome = nn.Parameter(torch.randn((self.config.pref_gene_dim,)))
+
         self.atomic_timestep = self.config.atomic_timestep
         self.timestep_conv = nn.Conv1d(
             in_channels=self.atomic_timestep,
@@ -122,8 +133,8 @@ class Agent(BaseAgent):
             kernel_size=1
         )  # to aggregate across observational timesteps into one singular timestep 
 
-        if self.as_module:
-            self.__init_as_module__(preference_genome)
+        if self.as_stateful:
+            self.__init_as_stateful__(preference_genome)
 
     def expose_genome(self) -> dict:
         """
@@ -161,14 +172,15 @@ class Agent(BaseAgent):
         """
         stateless functional call using arbitrary params
         """
+        encoder_params = param_traverse('obs_autoencoder.encoder', params)
         encoded_seq, _ = functional_call(
-            self.obs_autoencoder.encoder, params, obs_sequence
+            self.obs_autoencoder.encoder, encoder_params, obs_sequence
         )
-        print('encoded_seq shape?', encoded_seq.shape)
-        atomic = functional_call(self.timestep_conv, params, encoded_seq)
+        
+        timestep_conv_params = param_traverse('timestep_conv', params)
+        atomic = functional_call(self.timestep_conv, timestep_conv_params, encoded_seq)
 
-        return atomic.detach()
-
+        return atomic
 
     def update_latent_obs(self, timesteps:list[int], atomic_t:int):
         """
@@ -178,26 +190,58 @@ class Agent(BaseAgent):
         obs_list = [self.observation_cache.get(t) for t in timesteps]
         obs_sequence = nested_stack(obs_list, dim=1)
 
-        atomic = self.f_update_latent_obs(dict(self.named_parameters()), obs_sequence)
+        atomic = self.f_update_latent_obs(dict(self.named_parameters()), obs_sequence).detach()
 
         self._cache.set_container(
             'latent_obs', atomic_t, LatentObservation(lat_o=atomic.to(self.device)))
 
 
-    def update_states_cache(self, atomic_t: int, obs: torch.Tensor):
+    def f_pred_new_state(self,
+            params: dict,
+            obs: torch.Tensor,
+            prev_state: POMDPState | None,
+            prev_action: ActionPolicy | None,
+            batch_size: int,
+            atomic_t: int,
+        ):
+        transition_model = param_traverse('transition_model', params)
         if atomic_t == 1:
+            # transition_model here uses agent's, because of attributes only it has
+            # this technically isnt truly stateless right?
             h = self.transition_model.initial_h(
-                self.batch_size, 1  # magic number 1. i am so cooked. this is to represent timestep
+                1  # magic number 1. i am so cooked. this is to represent timestep
             )  # TODO this could be learned?
 
         else:
+            assert prev_state is not None and prev_action is not None, 'If atomic_t is not one, must pass in prev state and action.'
             # calculate next h using previous state
-            prev_state = self._cache.get_semantic('s', atomic_t - 1)
-            # prev_action = self._cache.get_semantic('a', atomic_t - 1)
-            prev_action = self._cache.get_semantic('a', atomic_t - 1)
-            h, _ = self.transition_model.forward_h(prev_state, prev_action)
+            h, _ = functional_call(
+                self.transition_model,
+                transition_model,
+                kwargs=dict(
+                    mode='h',
+                    state=prev_state,
+                    action=prev_action
+                )
+            )
 
-        z = self.transition_model.forward_z(h, external=obs)  # generate initial posterior
+        z = functional_call(
+            self.transition_model,
+            transition_model,
+            kwargs=dict(
+                mode='z', 
+                h_t=h,
+                external=obs
+            )
+        )  # generate initial posterior
+        
+        return h, z
+
+    def update_states_cache(self, atomic_t: int, obs: torch.Tensor):
+        prev_state = self._cache.get_semantic('s', atomic_t - 1) if self._cache.has_semantic('s', atomic_t - 1) else None
+        prev_action = self._cache.get_semantic('a', atomic_t - 1) if self._cache.has_semantic('a', atomic_t - 1) else None
+        
+        h, z = self.f_pred_new_state(atomic_t, prev_state, prev_action)
         h = h.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
         z = z.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
 
@@ -583,8 +627,17 @@ class Agent(BaseAgent):
         return torch.zeros(self.batch_size, 1, self.a_dim,).to(self.device) # TODO fix the magic number. it really is supposed to be 1,
             # to represent the singular atomic timestep, but this is horrible practice.
 
-    
-    def __init_as_module__(self, preference_genome):   
+    def f_predict_policy(self, params:dict):
+        """functional component of policy prediction. """
+        pp_params = param_traverse('policy_predictor', params)
+        pref_genome = params['preference_genome']
+        policy = functional_call(
+            self.policy_predictor, pp_params, pref_genome
+        )
+        return policy.sample()
+        
+        
+    def __init_as_stateful__(self, preference_genome):   
         assert preference_genome is not None, """
         Assertion failed. If running this Agent as an individual module, \
         that is, it posesses and uses its own cache,  \
@@ -620,7 +673,7 @@ class Agent(BaseAgent):
         self.loss_module = DistributionLosses()
         self.optimizer_registry = OptimRegistry()
 
-        self.policy: Normal = self.policy_predictor(preference_genome)
+        self.policy: Normal = self.f_predict_policy(preference_genome)
 
         # optimization
         inference_params = (

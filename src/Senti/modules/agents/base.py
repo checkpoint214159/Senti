@@ -1,68 +1,14 @@
 import time
 from abc import ABC
-from pathlib import Path
-from typing import Dict, List, Optional
 
 import torch
-from pydantic import BaseModel, Field, field_validator, validator
 from torch import nn
 
 from Senti.modules.config.config import ConfigDict
 from Senti.modules.genome.base import BaseGenome
+from Senti.modules.genome.genome_handler import GenomeRecord, GenotypeStrategy
 from Senti.modules.utils.caches import Cache
 from Senti.registry import AGENTS
-
-
-class GenotypeStrategy(BaseModel):
-    """
-    dataclass to encapsulate genotype -> path and genotype -> agents mappings.
-    Does not actually handle mutation, saving, tracking, etc etc. of genoms ofc.
-    """
-    id_genotype: Dict[int, Optional[Path]] = Field(
-        default_factory=dict,
-        description="mapping of genotype IDs to their respective checkpoint paths. Can be empty too"
-    )
-    
-    # Maps Genotype ID (int) to a list of Agent IDs
-    agents: Dict[int, List[int]] = Field(
-        ..., 
-        description="Mapping of genotype IDs to the list of agent IDs assigned to them."
-    )
-
-    @property
-    def is_cold_start(self) -> bool:
-        """indicates no chec"""
-        return len(self.id_genotype) == 0
-    
-    @field_validator('id_genotype', mode='before')
-    @classmethod
-    def validate_paths(cls, v):
-        if isinstance(v, dict):
-            for key, path in v.items():
-                if path == "": # catch empty strings that aren't quite None
-                    v[key] = None
-        return v
-
-    @validator('agents')
-    def validate_agents(cls, v, values):
-        if 'id_genotype' in values:
-            genotype_ids = set(values['id_genotype'].keys())
-            assigned_ids = set(v.keys())
-            
-            if not assigned_ids.issubset(genotype_ids):
-                missing = assigned_ids - genotype_ids
-                raise ValueError(f"Genotype IDs {missing} are assigned to agents but have no checkpoint path.")
-        return v
-
-    class Config:
-        # use Path / custom types
-        arbitrary_types_allowed = True
-        schema_extra = {
-            "example": {
-                "id_genotype": {1: "checkpoints/team_a.pth", 2: "checkpoints/team_b.pth"},
-                "agents": {1: [0, 1, 2, 3], 2: [4, 5, 6, 7]}
-            }
-        }
 
 
 @AGENTS.register_module()
@@ -79,10 +25,10 @@ class BaseAgent(ABC, nn.Module):
     renders the logic of 'what to do with agent modules' to a different component, like an AgentHandler,
     which is usually what is best for a 'full run', during experimentation and evaluation
     """
-    def __init__(self, config:ConfigDict, as_module: bool):
+    def __init__(self, config:ConfigDict, as_stateful: bool):
         super().__init__()
         self.config = config
-        self.as_module = as_module
+        self.as_stateful = as_stateful
 
     def expose_genome(self) -> BaseGenome:
         raise NotImplementedError('Agent class must implement a function to expose its genome.')
@@ -92,19 +38,6 @@ class BaseAgent(ABC, nn.Module):
         To support the actual construction of the BaseAgent, beyond its configuration in __init__.
         """
         raise NotImplementedError('Agent class must implement a function to build itself.')
-
-example_strategy = {
-    "id_genotype": {
-        1: "/mnt/e/nmmo_actinf/Senti/temp/test/test_gen12_fitness0.0.pth",
-        # 2: "/mnt/e/nmmo_actinf/Senti/temp/test/test_gen12_fitness0.0.pth",
-    }
-    ,
-    "agents": {
-        1: [0,],
-        # 1: [0, 1, 2, 3, 4, ...],
-        # 2: [8, 9, 10, 11, 12, ...],
-    }
-}
 
 
 @AGENTS.register_module()
@@ -129,14 +62,46 @@ class BaseAgentHandler(nn.Module):
         self.config = config
         self.device = torch.device(config.device)
         self._param_buffer = nn.ParameterDict()
-
+        self._param_names = []
         self.agent_blueprint = AGENTS.build(
-            self.config.agent_type, self.config.agent, as_module=False)
+            self.config.agent_type, self.config.agent, as_stateful=False, preference_genome=None)
+        
+    def init_strategy_params(self,
+        strategy: GenotypeStrategy,
+        named_params: dict,
+        mode: str = 'diverged'):
 
+        for buffer_idx, (g_id, agent_ids) in enumerate(strategy.agents.items()):
+            # In 'shared', every agent in a group points to one row (buffer_idx)
+            # In 'diverged', we'll handle this differently below
+            self.agent_to_geno_idx[agent_ids] = buffer_idx
+
+        # Shared: Buffer size = number of Genotypes
+        # Diverged: Buffer size = number of total Agents
+        buffer_size = len(strategy.agents.keys()) if mode == "shared" else self.agent_count
+
+        # TODO: inefficient for looping. make it vectorised?
+        tmp_params = {}
+        for idx, name in enumerate(self._param_names):
+            param = named_params[name]
+            repeat_dims = (buffer_size,) + (1,) * param.ndim
+            tmp_params[name] = param.data.clone().repeat(*repeat_dims)   
+
+        return tmp_params
+
+    def load_from_genome(self, genome: BaseGenome, tmp_params: dict, buffer_idx: int | list[int]):
+        ckpt: dict = genome.state_dict()
+
+        for name, param in tmp_params.items():
+            weights = ckpt[name]
+            
+            tmp_params[name][buffer_idx] = weights
+
+        return tmp_params
 
     def load(self,
-        strategy: dict | GenotypeStrategy,
-        mode: str = 'shared'):
+        strategy: GenotypeStrategy,
+        mode: str = 'diverged'):
         """
         Loads from a strategy object.
 
@@ -148,70 +113,52 @@ class BaseAgentHandler(nn.Module):
             where the propagation of the source genome is the 'goal'.
         mode='diverged': Agents get clones and learn independently. This is more for 'survival' based approaches,
             where the surival of 'an instance' is the 'goal'.
+        TODO ^ ai generated docstring do it properly
         """
 
         self.mode = mode  # TODO dont init this here
         self.strategy = strategy
         self.agent_count = sum(len(ids) for ids in strategy.agents.values())
-        unique_geno_ids = list(strategy.agents.keys())
         
         # maps [agent_id] -> [index_in_0th_dim_of_param_buffer]
         self.agent_to_geno_idx = torch.zeros(self.agent_count, dtype=torch.long, device=self.device)
+        unique_geno_ids = list(strategy.agents.keys())
         
-        for buf_idx, (g_id, agent_ids) in enumerate(strategy.agents.items()):
-            # In 'shared', every agent in a group points to one row (buf_idx)
-            # In 'diverged', we'll handle this differently below
-            self.agent_to_geno_idx[agent_ids] = buf_idx
-
-        # Shared: Buffer size = number of Genotypes
-        # Diverged: Buffer size = number of total Agents
-        buffer_size = len(unique_geno_ids) if mode == "shared" else self.agent_count
-        
-        # populate the Parameter Buffer
         blueprint_params = dict(self.agent_blueprint.named_parameters())
+        self._param_names = list(blueprint_params.keys())
         self._param_buffer.clear() # Reset existing params
 
-        for name, param in blueprint_params.items():
-            repeat_dims = (buffer_size,) + (1,) * param.ndim
-            init_tensor = param.data.clone().repeat(*repeat_dims)
+        tmp_params = self.init_strategy_params(
+            strategy=strategy, mode=mode, named_params=blueprint_params)
+        
+        for g_id in unique_geno_ids:
+            genome: BaseGenome | None = strategy.id_genotype.get(g_id)
             
-            # Apply Checkpoints
-            for buf_idx, g_id in enumerate(unique_geno_ids):
-                path = strategy.id_genotype.get(g_id)
-                if path and path.exists():
-                    ckpt = torch.load(path, map_location=self.device)
-                    weights = ckpt[name]
-                    
-                    if mode == "shared":
-                        init_tensor[buf_idx] = weights
-                    else:
-                        # in diverged mode, all agents in this genotype get these weights
-                        target_agents = strategy.agents[g_id]
-                        init_tensor[target_agents] = weights
-            
-            # register the final parameter post-loading and allocating
-            print('name before replce?', name)
-            safe_name = name.replace('.', '_')
-            print('safe_name after replace?', safe_name)
-            self._param_buffer[safe_name] = nn.Parameter(init_tensor)
+            if genome is not None:
+                buffer_idx = g_id if mode == "shared" else strategy.agents[g_id]
+                self.load_from_genome(
+                    genome=genome, tmp_params=tmp_params, buffer_idx=buffer_idx)
+                
+        for idx, name in enumerate(self._param_names):
+            self._param_buffer[str(idx)] = nn.Parameter(tmp_params[name])
 
         self.to(self.device)
+
+        # test = super().state_dict()
 
     @property
     def merged_params(self):
         start = time.time()
         params = {}
-        for safe_name, param_data in self._param_buffer.items():
-            print('safe_name?', safe_name)
-            orig_name = safe_name.replace('_', '.')
-            print('orig_name?', orig_name)
+        for idx, name in enumerate(self._param_names):
+            param_data = self._param_buffer[str(idx)]
             
             if self.mode == "shared":
                 # indexing creates the virtual population batch [agent_count, ...]
                 # gradients flow back to the unique rows in _param_buffer
-                params[orig_name] = param_data[self.agent_to_geno_idx]
+                params[name] = param_data[self.agent_to_geno_idx]
             else:
-                params[orig_name] = param_data
+                params[name] = param_data
         
         print('time taken for property merged_params', time.time() - start)
         return params

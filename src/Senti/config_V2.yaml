@@ -5,7 +5,7 @@ selector:
   root: /mnt/e/nmmo_actinf/Senti/temp
 
 agent:
-  gene_dim: 32
+  pref_gene_dim: 32
   policy_dim: 16
   n_policies: 4
   history: 2
@@ -64,14 +64,14 @@ agent:
     h_dim: ${agent.h_dim}
     z_dim: ${agent.z_dim}
     a_dim: ${agent.a_dim}
-    gene_dim: ${agent.gene_dim}
+    pref_gene_dim: ${agent.pref_gene_dim}
     policy_dim: ${agent.policy_dim}
 
   grounding_wm:
     h_dim: ${agent.h_dim}
     z_dim: ${agent.z_dim}
     a_dim: ${agent.a_dim}
-    external_dim: ${agent.gene_dim}
+    external_dim: ${agent.pref_gene_dim}
     device: ${agent.device}
     hidden_dim: 20
     num_GRU_layers: ${agent.state_depth}
@@ -86,7 +86,7 @@ agent:
     z_dim: ${agent.z_dim}
 
   policy_predictor:
-    gene_dim: ${agent.gene_dim}
+    pref_gene_dim: ${agent.pref_gene_dim}
     policy_dim: ${agent.policy_dim}
 
 

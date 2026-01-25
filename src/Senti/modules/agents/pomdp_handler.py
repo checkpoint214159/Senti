@@ -5,6 +5,7 @@ from torch.func import functional_call, vmap
 from torch.nn.utils.stateless import _reparametrize_module
 
 from Senti.modules.agents.base import BaseAgent, BaseAgentHandler, GenotypeStrategy
+from Senti.modules.agents.pomdp_agent import Agent
 from Senti.modules.dataclass.action_policy import ActionPolicy
 from Senti.modules.dataclass.normal import Normal
 from Senti.modules.dataclass.obs import LatentObservation
@@ -13,9 +14,7 @@ from Senti.modules.genome.preference_genome import PreferenceGenome
 from Senti.modules.optim.dist_loss import DistributionLosses
 from Senti.modules.optim.optimregistry import OptimRegistry
 from Senti.modules.policy.policy_predictor import PolicyPredictor
-from Senti.modules.utils.caches import (
-    create_POMDP_cache,
-)
+from Senti.modules.utils.caches import Cache, HierarchicalCache, create_POMDP_cache
 from Senti.modules.utils.utils import nested_stack
 from Senti.registry import AGENTS
 
@@ -31,8 +30,8 @@ class POMDPAgentHandler(BaseAgentHandler):
         self.batch_size = self.config.batch_size
         self.history = self.config.history
         self.inference_steps = self.config.inference_steps
-        self.atomic_timestep = config.atomic_timestep
-        self.discrete_step = config.discrete_step
+        self.atomic_timestep = self.config.atomic_timestep
+        self.discrete_step = self.config.discrete_step
         self.atomic_count = 0
         self.curr_timestep = 1
 
@@ -40,24 +39,19 @@ class POMDPAgentHandler(BaseAgentHandler):
 
         # caches in observation space
         observation_cache, action_cache, _cache = create_POMDP_cache()
-        self.observation_cache = observation_cache
-        self.action_cache = action_cache
-        self._cache = _cache
+        self.observation_cache: Cache = observation_cache
+        self.action_cache: Cache = action_cache
+        self._cache: HierarchicalCache = _cache
         self.prev_api: ActionPolicy | None = None
+        
+        self.state_dims = self.config.state_dims
 
     def load(self, strategy: dict | GenotypeStrategy):
         super().load(strategy)
 
-        with _reparametrize_module(self.agent_blueprint, self.merged_params):
-            stacked_pref = torch.stack(
-                [p[i].state_dict()['preferences'] for i, p in init_pref.items()],
-                dim=0,
-            )
-            self.policy_tensor = self.agent_blueprint.policy_predictor(stacked_pref)
-
 
     @classmethod
-    def seed_preferences(self, gene_dim: int, ids: list[int]):
+    def seed_preferences(self, pref_gene_dim: int, ids: list[int]):
         """
         Helper method to instantiate the preference genome
         This will be fed to the handler during the very first round of selection
@@ -65,7 +59,7 @@ class POMDPAgentHandler(BaseAgentHandler):
         """
         return {
             id: PreferenceGenome(
-                gene=nn.ParameterDict({'preferences': torch.nn.Parameter(torch.randn(gene_dim))})
+                gene=nn.ParameterDict({'preferences': torch.nn.Parameter(torch.randn(pref_gene_dim))})
             ) for id in ids
         }
 
@@ -99,32 +93,6 @@ class POMDPAgentHandler(BaseAgentHandler):
         TODO: assumes that the obs encoder operates on each timestep seperately, i.e it doesnt support us just
         stacking the tensor and doing one pass through. this should change
         """
-        # obs_list = [self.observation_cache.get(t) for t in timesteps]
-        # # print('obs_List?', obs_list)
-        # obs_sequence = nested_stack(obs_list, dim=1)
-
-        # def single_encode(p, o):
-        #     module = self.agent_blueprint
-        #     with _reparametrize_module(module, p):
-        #         agent_embeds, _ = module.obs_autoencoder.encoder(o)
-        #     return agent_embeds
-        
-        # # in_dims: (where to slice params, where to slice obs)
-        # #
-        # v_time = vmap(single_encode, in_dims=(None, 0))
-        # v_population = vmap(v_time, in_dims=(0, 0))
-
-        # stacked_encoded = v_population(self.merged_params, obs_sequence)
-        
-        # def run_conv(p, x):
-        #     module = self.agent_blueprint
-        #     with _reparametrize_module(module, p):
-        #         atomic = module.timestep_conv(x)
-        #     return atomic
-
-        # v_conv = vmap(run_conv, in_dims=(0, 0))
-        # atomic = v_conv(self.merged_params, stacked_encoded).squeeze(1).detach()  # crucial detach
-        # # so we dont get double backward problem
         obs_list = [self.observation_cache.get(t) for t in timesteps]
         obs_sequence = nested_stack(obs_list, dim=1)
 
@@ -133,7 +101,9 @@ class POMDPAgentHandler(BaseAgentHandler):
             in_dims=(0, 0)
         )
 
-        population_atomic = v_population(self.merged_params, obs_sequence)
+        # detaches to prevent double grad problem
+        population_atomic = v_population(self.merged_params, obs_sequence).detach()
+
         print('population_atomic shape?', population_atomic.shape)
         self._cache.set_container(
             'latent_obs', 
@@ -141,21 +111,22 @@ class POMDPAgentHandler(BaseAgentHandler):
             LatentObservation(lat_o=population_atomic.to(self.device))
         )
 
-
     def update_states_cache(self, atomic_t: int, obs: torch.Tensor):
-        if atomic_t == 1:
-            h = self.transition_model.initial_h(
-                self.batch_size, 1  # magic number 1. i am so cooked. this is to represent timestep
-            )  # TODO this could be learned?
+        prev_state = self._cache.get_semantic('s', atomic_t - 1) if self._cache.has_semantic('s', atomic_t - 1) else None
+        prev_action = self._cache.get_semantic('a', atomic_t - 1) if self._cache.has_semantic('a', atomic_t - 1) else None
+        in_dims = [0, 0, 0, 0, None, None]
 
-        else:
-            # calculate next h using previous state
-            prev_state = self._cache.get_semantic('s', atomic_t - 1)
-            # prev_action = self._cache.get_semantic('a', atomic_t - 1)
-            prev_action = self._cache.get_semantic('a', atomic_t - 1)
-            h, _ = self.transition_model.forward_h(prev_state, prev_action)
-
-        z = self.transition_model.forward_z(h, external=obs)  # generate initial posterior
+        # hardcode to change the None if prev_state / prev_action is None
+        in_dims[2] = None if prev_state is None else 0
+        in_dims[3] = None if prev_action is None else 0
+        
+        v_population = vmap(
+            self.agent_blueprint.f_pred_new_state,
+            in_dims=tuple(in_dims)
+        )
+        h, z = v_population(self.merged_params, obs, prev_state, prev_action,
+            self.batch_size, atomic_t
+        )
         h = h.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
         z = z.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
 
@@ -176,7 +147,6 @@ class POMDPAgentHandler(BaseAgentHandler):
         if not self._cache.has_container('states', atomic_t):
             obs: torch.Tensor = self._cache.get_semantic('lat_o', atomic_t)
             self.update_states_cache(atomic_t, obs)
-
 
     def update_api_cache(self, atomic_t: int):
         if self.prev_api is None:
@@ -218,10 +188,20 @@ class POMDPAgentHandler(BaseAgentHandler):
         for t in interleaved:
             self.observation_cache.remove(t) if self.observation_cache.has(t) else None
 
-    def empty_action_init(self):
-        """helper method to lazily create empty a."""
-        return torch.zeros(self.batch_size, 1, self.a_dim,).to(self.device) # TODO fix the magic number. it really is supposed to be 1,
+    def empty_action_init(self) -> torch.Tensor:
+        """helper method to sloppily create empty a."""
+        return torch.zeros(self.batch_size, 1, self.state_dims.a_dim,).to(self.device) # TODO fix the magic number. it really is supposed to be 1,
+        # to represent the singular atomic timestep, but this is horrible practice.
 
-    def policy_init(self):
+
+    def policy_init(self) -> torch.Tensor:
         # TODO: make it dependent on genome. for now just sample.
-        return self.policy.sample()
+        v_population = vmap(
+            self.agent_blueprint.f_predict_policy,
+            in_dims=(0,),
+            randomness='same',
+        )
+
+        # detaches to prevent double grad problem
+        return v_population(self.merged_params)
+

@@ -5,7 +5,7 @@ _base_ = [
 # meta shared hyperparams
 device = 'cuda'
 atomic_timestep = 2
-gene_dim = 32
+pref_gene_dim = 32
 policy_dim = 16
 n_policies = 4
 h_dim = [8, 8]
@@ -24,7 +24,7 @@ play_rounds = 8
 selector = dict(
     root="/mnt/e/nmmo_actinf/Senti/temp",
     seed=dict(
-        gene_dim=gene_dim
+        pref_gene_dim=pref_gene_dim
     )
 )
 
@@ -45,6 +45,7 @@ nmmo_obs_decoder = dict(
 
 agent = dict(
     atomic_timestep=atomic_timestep,
+    pref_gene_dim=pref_gene_dim,
     NmmoObsAE=dict(
         encoder=nmmo_obs_encoder,
         decoder=nmmo_obs_decoder
@@ -68,14 +69,14 @@ agent = dict(
         h_dim=h_dim,
         z_dim=z_dim,
         a_dim=a_dim,
-        gene_dim=gene_dim,
+        pref_gene_dim=pref_gene_dim,
         policy_dim=policy_dim
     ),
     grounding_wm=dict(
         h_dim=h_dim,
         z_dim=z_dim,
         a_dim=a_dim,
-        external_dim=gene_dim,
+        external_dim=pref_gene_dim,
         device=device,
         hidden_dim=hidden_dim_internal,
         num_GRU_layers=state_depth
@@ -90,16 +91,21 @@ agent = dict(
         z_dim=z_dim
     ),
     policy_predictor=dict(
-        gene_dim=gene_dim,
+        pref_gene_dim=pref_gene_dim,
         policy_dim=policy_dim
     )
 )
 
 agent_handler = dict(
+    state_dims = dict(
+        h_dim=h_dim,
+        z_dim=z_dim,
+        a_dim=a_dim,
+    ),
     name='POMDPAgentHandler',
     agent_type='Agent',
     device='cuda',
-    gene_dim=gene_dim,
+    pref_gene_dim=pref_gene_dim,
     batch_size=n_teams * team_agents,
     inference_steps=25,
     param_learning_steps=5,
@@ -117,10 +123,18 @@ env_handler = dict(
     device='cuda',
 )
 
+genome_handler = dict(
+    name='BaseGenomeHandler',
+    root='test',
+    n_teams=n_teams,
+    team_agents=team_agents,
+)
+
 experiment = dict(
     rounds=play_rounds,
     agent_handler=agent_handler,
     env_handler=env_handler,
+    genome_handler=genome_handler,
 )
 
 

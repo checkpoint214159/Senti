@@ -6,8 +6,12 @@ from Senti.modules.dataclass.base import BaseState
 
 
 class GroupedCategoricalState(BaseState):
-    def __init__(self, logits: torch.Tensor):
-        super().__init__()
+
+    def __init__(self,
+        logits: torch.Tensor,
+        as_parameter: bool = True
+    ):
+        super().__init__(as_parameter)
         assert len(logits.shape) >= 3, "Assertion failed. logits must have 3 dimensions minimum, where last two "\
             "are assumed to be num_groups, num_classes"
         self.logits = nn.Parameter(logits)
@@ -53,7 +57,19 @@ class GroupedCategoricalState(BaseState):
     
     def entropy(self):
         return self.as_distribution().entropy()
-
+    
+    def __flatten__(self):
+        children = (self.logits, )
+        aux_data = (None, )
+        return children, aux_data
+    
+    @classmethod
+    def __unflatten__(cls, children, aux_data):
+        return cls(
+            logits=children[0], 
+            as_parameter=False 
+        )
+    
     # def compute_energy(self, other: "GroupedCategoricalState", loss_func=None):
     #     """
     #     In Active Inference, the energy (VFE) between two categorical 

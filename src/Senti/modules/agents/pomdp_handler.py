@@ -130,9 +130,8 @@ class POMDPAgentHandler(BaseAgentHandler):
         h = h.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
         z = z.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
 
-        self._cache.set_container('states', atomic_t, POMDPState(
-            h=h,
-            z=z).to(self.device)
+        self._cache.set_container('states', atomic_t, 
+            POMDPState(h=h, z=z, as_parameter=True).to(self.device)
         )
 
     def update_caches(self, timesteps:list[int], atomic_t:int):
@@ -203,5 +202,6 @@ class POMDPAgentHandler(BaseAgentHandler):
         )
 
         # detaches to prevent double grad problem
-        return v_population(self.merged_params)
+        policy: Normal = v_population(self.merged_params)
+        return policy.sample()
 

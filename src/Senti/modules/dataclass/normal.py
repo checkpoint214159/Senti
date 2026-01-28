@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.distributions import Independent
 
+
 from Senti.modules.dataclass.base import BaseState
 from Senti.modules.optim.base import BaseLoss
 
@@ -43,8 +44,10 @@ class BaseNormal(BaseState):
     it can be left as none.
     """
     def __init__(self,
-        is_posterior: bool | None = None):
-        super().__init__()
+        is_posterior: bool | None = None,
+        as_parameter: bool = True,
+        ):
+        super().__init__(as_parameter)
         assert isinstance(is_posterior, bool) or is_posterior is None, 'Assertion failed. is_posterior argument passed '\
             'to BaseNormal is neither boolean nor None.'
         self._is_posterior = is_posterior
@@ -111,22 +114,23 @@ class Normal(BaseNormal):
         z_log_std: torch.Tensor | None = None,
         z_log_std_shape: tuple[int] | None = None,
         log_std_init: int = 1,
+        as_parameter: bool = True,
         **kwargs
     ):
-        super().__init__(**kwargs)
+        super().__init__(as_parameter=as_parameter, **kwargs)
         cls = self.__class__.__name__
 
         z_init = dim_or_value_init(
             z_mean,
             z_mean_shape,
             init_value=0)
-        self.z_mean = nn.Parameter(z_init)
+        self.z_mean = self.wrap(z_init)
 
         z_log_std = dim_or_value_init(
             z_log_std,
             z_log_std_shape,
             init_value=log_std_init)
-        self.z_log_std = nn.Parameter(z_log_std)
+        self.z_log_std = self.wrap(z_log_std)
 
         assert self.z_mean.shape == self.z_log_std.shape, \
             f'{cls}: Assertion failed. z_mean and z_log_std have mismatching shapes: \n' \
@@ -205,12 +209,27 @@ class Normal(BaseNormal):
         return Normal(
             z_mean=func(self.mean),
             z_log_std=func(self.log_std),
+            as_parameter=self.as_parameter,
         )
     
     @classmethod
     def concat_timesteps(cls, normals):
         "simple helper func to stack along time dim."
         return cls.stack(normals, dim=1)
+    
+    def __flatten__(self):
+        children = (self.z_mean, self.z_log_std)
+        aux_data = (self._is_posterior,) 
+        return children, aux_data
+    
+    @classmethod
+    def __unflatten__(cls, children, aux_data):
+        return cls(
+            z_mean=children[0], 
+            z_log_std=children[1], 
+            is_posterior=aux_data[0],
+            as_parameter=False 
+        )
 
 
 T = TypeVar("T", bound="BaseNormal")

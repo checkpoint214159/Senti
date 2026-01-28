@@ -627,14 +627,14 @@ class Agent(BaseAgent):
         return torch.zeros(self.batch_size, 1, self.a_dim,).to(self.device) # TODO fix the magic number. it really is supposed to be 1,
             # to represent the singular atomic timestep, but this is horrible practice.
 
-    def f_predict_policy(self, params:dict):
+    def f_predict_policy(self, params:dict) -> Normal:
         """functional component of policy prediction. """
         pp_params = param_traverse('policy_predictor', params)
         pref_genome = params['preference_genome']
         policy = functional_call(
             self.policy_predictor, pp_params, pref_genome
         )
-        return policy.sample()
+        return policy
         
         
     def __init_as_stateful__(self, preference_genome):   

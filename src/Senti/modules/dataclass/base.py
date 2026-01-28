@@ -1,10 +1,30 @@
 import copy
 import functools
-from abc import ABC, abstractmethod
+import inspect
+from abc import ABC, ABCMeta
 from dataclasses import dataclass, fields
 
 import torch
 import torch.nn as nn
+from torch.utils._pytree import register_pytree_node
+
+
+def register_state_pytree(cls):
+    register_pytree_node(
+        cls,
+        lambda obj: obj.__flatten__(),
+        lambda aux, children: cls.__unflatten__(aux, children)
+    )
+    return cls
+
+class PyTreeStateRegistryMeta(ABCMeta):
+    def __init__(cls, name, bases, nmspc):
+        super(PyTreeStateRegistryMeta, cls).__init__(name, bases, nmspc)
+        register_pytree_node(
+            cls,
+            flatten_fn=lambda obj: obj.__flatten__(),
+            unflatten_fn=lambda values, context: cls.__unflatten__(values, context)
+        )
 
 
 def _apply_node_logic(cls):
@@ -22,23 +42,32 @@ def _apply_node_logic(cls):
         cls.s = property(lambda self: self)
     return cls
 
-# wrapper to allow for dataclass logic whilst calling nn.Module init first.
-# this is technically dangerous, as we are using dataclass but not treating it
-# as actaul comparable data. This means we simply disable the auto-__eq__ generation,
-# telling python we arent really treating this as comparable data, instead a container for data,
-# or sort of a schema for data.
+
 def state_node(cls):
+    """
+    wrapper to allow for dataclass logic whilst calling nn.Module init first.
+    this is technically dangerous, as we are using dataclass but not treating it
+    as actaul comparable data. This means we simply disable the auto-__eq__ generation,
+    telling python we arent really treating this as comparable data, instead a container for data,
+    or sort of a schema for data.
+    """
     cls = _apply_node_logic(cls)
     
     def __init__(self, *args, **kwargs):
-        super(cls, self).__init__()
+        parent_sig = inspect.signature(super(cls, self).__init__)
+        parent_params = parent_sig.parameters
+
+        parent_kwargs = {k: v for k, v in kwargs.items() if k in parent_params}
+        self_kwargs = {k: v for k, v in kwargs.items() if k not in parent_params}
+        
+        super(cls, self).__init__(**parent_kwargs) # Find the parent of this specific class and call its initializer.
         
         cls_fields = fields(cls)
         
         for i, val in enumerate(args):
             setattr(self, cls_fields[i].name, val)
             
-        for name, val in kwargs.items():
+        for name, val in self_kwargs.items():
             setattr(self, name, val)
             
         for field in cls_fields:
@@ -79,18 +108,43 @@ def tensor_node(cls):
     cls.clone = clone
     return cls
 
-
-class BaseState(nn.Module, ABC):
+class BaseState(nn.Module, ABC, metaclass=PyTreeStateRegistryMeta):
     """
     mother of all state. all hail base state.
 
     It is useful to have a State class as a layer of abstraction, as state itself should be capable
     of flexibly designed, without having the user carefully unpack the data within
     for use.
+
+    We implement as_parameter here, since it is a very general attribute that applies
+    to most state (most state either is, or is not a parameter). Turns out this is useful
+    for things like vmap which dont play well with parameters.
     """
 
-    def __init__(self):
+    def __init__(self, as_parameter):
         super().__init__()
+        self.as_parameter = as_parameter
+
+    def wrap(self, val):
+        if self.as_parameter and not isinstance(val, nn.Parameter):
+            return nn.Parameter(val)
+        return val
+    
+    def parameterize(self) -> "BaseState":
+        """ 
+        converts to parameter by simply re-initing as parameter.
+        since this takes in custom args it should be overriden.
+        """
+        raise NotImplementedError('Parameterize not yet implemented.')
+
+    def __flatten__(self):
+        """pytreee __flatten__ for vmap/jit support."""
+        raise NotImplementedError('__flatten__ not yet implemented.')
+
+    @classmethod
+    def __unflatten__(cls):
+        """pytreee __unflatten__ for vmap/jit support."""
+        raise NotImplementedError('__unflatten__ not yet implemented.')
 
     @classmethod
     def assert_type(cls, other):

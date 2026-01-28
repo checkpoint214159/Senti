@@ -349,3 +349,15 @@ Grouping together these updates since they are kind of related in some vague way
 2. Now genomes have a blueprint they validate against and mainly hold one data: state_dict. Ive implemented the ability to load from their state dict (mostly just a for loop checking for names)
 3. I have created a higher-order genome that encapsulates other genomes but also maintains flatness, merging the module blueprints of genomes togehter and also their state dicts, so the user can define their own agent handler load_from_genome method
 4. May have to seperate the dataclasses (POMDP, Normal, GroupedCategorical, etc) from my inner modules. vmap doesnt play well with these and only returns Tensors.
+
+# 28/1/2026
+4 is a big sucker, but actually we juked it
+
+as long as we have a boolean 'as_parameter' for our state, i.e the data in it is either just a plain tensor or a parameter, we can toggle whether or not this is so. 
+
+then we append another set of functionality, which is flatten and unflatten. These pytree utilities allow vmap to unpack + pack our State classes, of course maintaining that parameters cannot be returned since vmap is meant to be functional and no state is retained.
+
+i.e:
+1. I want to create param-full State. I create the base data in the State, and it returns me the Tensor version according to my __unflatten__ definition, which I can easily convert to a param-full version
+2. I want to do computation using it. I pass into vmap, which can now slice my custom data in accordance to how I define __flatten__. For each slice computation is done. 
+3. Later, I call my optim wrappers to optimize, and gradients have no problem flowing back to me.

@@ -54,7 +54,7 @@ class RSSM(nn.Module):
         G, C = self.h_groups, self.h_classes
         dims = dims + (G, C)
         h_t = torch.zeros(dims, device=self.device)
-        return GroupedCategoricalState(h_t).to(self.device)
+        return GroupedCategoricalState(h_t)
     
 
     def wrap_z(self, z_mean_logstd, is_posterior=None) -> Normal:
@@ -68,20 +68,19 @@ class RSSM(nn.Module):
             is_posterior=is_posterior,
         )
     
-    def forward(self, *args, mode: str = "full", **kwargs):
-        """
-        dispatch to various other forwards
-        """
-        if mode == "full":
+    def forward(self, mode: str, *args, **kwargs):
+        """routes to various things, because functional call tragically only knows the forward method"""
+        if mode == 'full':
             return self.forward_full(*args, **kwargs)
-        elif mode == "h":
+        elif mode == 'h':
             return self.forward_h(*args, **kwargs)
-        elif mode == "z":
+        elif mode == 'z':
             return self.forward_z(*args, **kwargs)
         else:
-            raise ValueError(f"Unknown RSSM mode: {mode}")
-        
-    def forward_full(self, state: POMDPState, a: torch.Tensor): 
+            raise ValueError("Invalid mode passed to RSSM forward.")
+
+    
+    def forward_full(self, state: POMDPState, a:torch.Tensor): 
         h, seed_next = self.forward_h(state, a)
         z = self.forward_z(h)
         return h, seed_next, z
@@ -107,8 +106,8 @@ class RSSM(nn.Module):
         prev_h = prev_h.unsqueeze(0).repeat(self.num_GRU_layers, 1, 1)  # adds layer, [N, B, h_emb]
         output, h_t = self.recurrent_core(x, prev_h)  # output: [B, L, D*h_emb], h: [D*N, B, h_emb]
 
-        return GroupedCategoricalState.from_flat_logits(output, G, C).to(self.device), \
-            GroupedCategoricalState.from_flat_logits(h_t, G, C).to(self.device)
+        return GroupedCategoricalState.from_flat_logits(output, G, C), \
+            GroupedCategoricalState.from_flat_logits(h_t, G, C)
 
     def forward_z(self, h_t: GroupedCategoricalState,
             external:torch.Tensor | None = None) -> Normal:
@@ -117,12 +116,9 @@ class RSSM(nn.Module):
         Still accept the whole POMDPState as an argument, to keep abstraction neat
         """
         is_posterior = False
-        
         if external is not None:
             is_posterior = True
             h_t = h_t.as_tensor()
-            print('external shape?', external.shape)
-            print('h_t shape?', h_t.shape)
             x = torch.cat([h_t, external], dim=-1)
             z = self.z_given_h_ext(x)
         else:

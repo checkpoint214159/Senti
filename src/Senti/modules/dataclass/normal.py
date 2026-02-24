@@ -6,7 +6,6 @@ import torch
 from torch import nn
 from torch.distributions import Independent
 
-
 from Senti.modules.dataclass.base import BaseState
 from Senti.modules.optim.base import BaseLoss
 
@@ -119,6 +118,7 @@ class Normal(BaseNormal):
     ):
         super().__init__(as_parameter=as_parameter, **kwargs)
         cls = self.__class__.__name__
+        self._kwargs = kwargs
 
         z_init = dim_or_value_init(
             z_mean,
@@ -136,7 +136,17 @@ class Normal(BaseNormal):
             f'{cls}: Assertion failed. z_mean and z_log_std have mismatching shapes: \n' \
             f'z_mean shape: {self.z_mean.shape} \n' \
             f'z_log_std shape: {self.z_log_std.shape}'
-        
+
+
+    def parameterize(self) -> "Normal":
+        """Reinits as a Normal with 'as_parameter' flag."""
+        return self.__class__(
+            z_mean=self.z_mean,
+            z_log_std=self.z_log_std,
+            as_parameter=True,
+            **self._kwargs # Pass the original flags back in
+        )
+
     @classmethod
     def from_shape(cls, shape, log_std_init=1):
         return cls(z_mean_shape=shape, z_log_std_shape=shape, log_std_init=log_std_init)

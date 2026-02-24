@@ -361,3 +361,16 @@ i.e:
 1. I want to create param-full State. I create the base data in the State, and it returns me the Tensor version according to my __unflatten__ definition, which I can easily convert to a param-full version
 2. I want to do computation using it. I pass into vmap, which can now slice my custom data in accordance to how I define __flatten__. For each slice computation is done. 
 3. Later, I call my optim wrappers to optimize, and gradients have no problem flowing back to me.
+
+
+# 18/2/2026
+
+Hi sorry its been a while stupid CNY, MGC hackathon website things, some open mic performance, and school work have really slowed me down here
+
+just a refresher for eventually when I get to diagramming everything
+
+AgentHandler: Handles the context of computation of multiple agents, manages loss module, optimizer, states cache etc. Does not hold the nn.Modules computation at its scope, hence the below
+
+Agent: Encapsulates the splitting / traversal of params, and the actual computation, since the nn.Modules lay at its scope. In otherwords it should be pretty much purely functional.
+
+This distinction is important. Also i think ill just make it clearer, by purging all non-computation related semantics from the agent class, so even if someone wants to run "a singular lone agent" they have to go through AgentHandler. Too bad

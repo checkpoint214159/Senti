@@ -19,6 +19,7 @@ class OptimRegistry:
             optimizer_class = getattr(optim, optim_name)
             if key in self.optimizers:
                 print(f'WARNING: Replacing existing key {key} in optimizer dict')
+
             self.optimizers[key] = optimizer_class(params, **kwargs)
             
         except AttributeError:

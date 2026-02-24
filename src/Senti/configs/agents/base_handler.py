@@ -16,10 +16,24 @@ state_depth = 3
 hidden_dim_internal = 20
 
 n_teams = 8
-team_agents = 1
+team_agents = 2
 
 play_rounds = 8
 
+optimizer = dict(
+    inference=dict(
+        lr=0.005
+    ),
+    wm=dict(
+        lr=0.005
+    ),
+    belief=dict(
+        lr=0.005
+    ),
+    policy=dict(
+        lr=0.005,
+    )
+)
 
 selector = dict(
     root="/mnt/e/nmmo_actinf/Senti/temp",
@@ -51,7 +65,7 @@ agent = dict(
         decoder=nmmo_obs_decoder
     ),
     zh_o=dict(
-        h_dim=h_dim,
+        flattened_h_dim=h_dim[0] * h_dim[1] * state_depth,
         z_dim=z_dim,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim_internal
@@ -66,7 +80,7 @@ agent = dict(
         num_GRU_layers=state_depth
     ),
     deliberative_head=dict(
-        h_dim=h_dim,
+        flattened_h_dim=h_dim[0] * h_dim[1] * state_depth,
         z_dim=z_dim,
         a_dim=a_dim,
         pref_gene_dim=pref_gene_dim,
@@ -82,9 +96,10 @@ agent = dict(
         num_GRU_layers=state_depth
     ),
     habitual_head=dict(
-        h_dim=h_dim,
+        flattened_h_dim=h_dim[0] * h_dim[1] * state_depth,
         z_dim=z_dim,
-        a_dim=a_dim
+        a_dim=a_dim,
+        hidden_dim=hidden_dim_internal
     ),
     pref=dict(
         h_dim=h_dim,
@@ -114,7 +129,10 @@ agent_handler = dict(
     history=2,
     planning_horizon=5,
     planning_steps=4,
+    n_policies_sampled=4,
     agent=agent,
+    optimizer=optimizer,
+    mode='shared',
 )
 
 env_handler = dict(

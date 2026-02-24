@@ -29,5 +29,6 @@ class PolicyPredictor(nn.Module):
 
         return Normal(
             z_mean=mean,
-            z_log_std=std
+            z_log_std=std,
+            as_parameter=True,
         )

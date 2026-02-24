@@ -16,7 +16,7 @@ class ConfigDict(dict):
 
 class Config:
     @staticmethod
-    def fromfile(filename):
+    def fromfile(filename) -> ConfigDict:
         filename = os.path.abspath(filename)
         
         # 1. Execute the python file and capture variables

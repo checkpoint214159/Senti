@@ -11,7 +11,6 @@ import json
 import os
 import pathlib
 import random
-import re
 import time
 
 import numpy as np
@@ -25,11 +24,23 @@ from torch.utils.tensorboard import SummaryWriter
 to_np = lambda x: x.detach().cpu().numpy()
 
 
-def param_traverse(prefix:str, params:dict):
-    return {
+def param_traverse(prefix:str, params:dict, single=False) -> dict[torch.Tensor] | torch.Tensor:
+    """
+    Simple helper function to extract keys with prefix as specificed, from param dict.
+
+    single flag is passed if we are using this to extract one particular module only, and would like
+    it neatly as one Tensor only.
+    """
+
+    start = time.time()
+    any_prefix = {
         k[len(prefix):]: v for k, v in params.items()
         if prefix in k
     }
+    if single:
+        return any_prefix['']
+    print("time taken to traverse params?", time.time() - start)
+    return any_prefix
 
 
 def nested_stack(items, dim=0):

@@ -53,11 +53,35 @@ class BaseAgentHandler(nn.Module):
 
     Strategy itself defines a mapping between Genomes, the path to load them from, and the agents that use them.
     We use path to build Genome, then load in the various semantics into the agent.
+
+    Also comes with the ability to check against a dict of protected attributes meant to be only inited at runtime,
+    specifically to optimize the agent. Pumps out a custom error if so
     """
+
+    _OPTIM_ATTRS = {}  # placeholder class attribute to define attributes inited only at runtime
+
+    def __getattr__(self, name):
+        if name in self._OPTIM_ATTRS:
+            backing_name = self._OPTIM_ATTRS[name]
+            value = getattr(self, backing_name, None)
+            
+            if value is None:
+                raise NotImplementedError(
+                    f"Error: '{name}' not initialized. "
+                    f"Did you mean to load this handler with 'optim=True'?"
+                )
+            return value
+
+        return super().__getattr__(name)
 
     def __init__(self,
         config: ConfigDict,
     ):
+        """
+        Note: seperate param names from the dict that holds them, since raw names violate the particular
+        delicate requirements of a ParameterDict (not having dots in the names)
+
+        """
         super().__init__()
         self.config = config
         self.device = torch.device(config.device)
@@ -65,11 +89,21 @@ class BaseAgentHandler(nn.Module):
         self._param_names = []
         self.agent_blueprint = AGENTS.build(
             self.config.agent_type, self.config.agent, as_stateful=False, preference_genome=None)
+        self.mode = self.config.mode
+        assert self.mode in ['diverged', 'shared']
         
-    def init_strategy_params(self,
+    def init_params_from_strategy(self,
         strategy: GenotypeStrategy,
         named_params: dict,
-        mode: str = 'diverged'):
+        ) -> dict:
+        """
+        from original param shapes creates buffers of appropriate size.
+
+        Basically, we pad an additional dimension at dim=0, for the 'population' dim.
+        If parameters are shared between teammates, population dim is equal to number of teams.
+        If not, we diverge and each get their own. So far this case I will not yet handle for, because
+        its quite challenging and i havent figured out the semantics of saving and loading yet.
+        """
 
         for buffer_idx, (g_id, agent_ids) in enumerate(strategy.agents.items()):
             # In 'shared', every agent in a group points to one row (buffer_idx)
@@ -78,30 +112,38 @@ class BaseAgentHandler(nn.Module):
 
         # Shared: Buffer size = number of Genotypes
         # Diverged: Buffer size = number of total Agents
-        buffer_size = len(strategy.agents.keys()) if mode == "shared" else self.agent_count
+        buffer_size = len(strategy.agents.keys()) if self.mode == "shared" else self.agent_count
 
         # TODO: inefficient for looping. make it vectorised?
-        tmp_params = {}
+        spliced_params = {}
+        assert len(self._param_names) != 0, 'Assertion failed, param_names is empty, so the init_params_from_strategy method would have failed' \
+            'if your strategy was valid. Check that you called load() before this?'
+        
         for idx, name in enumerate(self._param_names):
             param = named_params[name]
             repeat_dims = (buffer_size,) + (1,) * param.ndim
-            tmp_params[name] = param.data.clone().repeat(*repeat_dims)   
+            spliced_params[name] = param.data.clone().repeat(*repeat_dims)   
 
-        return tmp_params
+        return spliced_params
 
-    def load_from_genome(self, genome: BaseGenome, tmp_params: dict, buffer_idx: int | list[int]):
+    def load_from_genome(self,
+        genome: BaseGenome,
+        spliced_params: dict,
+        buffer_idx: list[int]
+    ):
         ckpt: dict = genome.state_dict()
 
-        for name, param in tmp_params.items():
+        for name, param in spliced_params.items():
             weights = ckpt[name]
             
-            tmp_params[name][buffer_idx] = weights
+            spliced_params[name][buffer_idx] = weights
 
-        return tmp_params
+        return spliced_params
 
+        
     def load(self,
         strategy: GenotypeStrategy,
-        mode: str = 'diverged'):
+        ):
         """
         Loads from a strategy object.
 
@@ -115,8 +157,6 @@ class BaseAgentHandler(nn.Module):
             where the surival of 'an instance' is the 'goal'.
         TODO ^ ai generated docstring do it properly
         """
-
-        self.mode = mode  # TODO dont init this here
         self.strategy = strategy
         self.agent_count = sum(len(ids) for ids in strategy.agents.values())
         
@@ -126,32 +166,37 @@ class BaseAgentHandler(nn.Module):
         
         blueprint_params = dict(self.agent_blueprint.named_parameters())
         self._param_names = list(blueprint_params.keys())
-        self._param_buffer.clear() # Reset existing params
+        self._param_buffer.clear() # ensure clean state
 
-        tmp_params = self.init_strategy_params(
-            strategy=strategy, mode=mode, named_params=blueprint_params)
+        spliced_params = self.init_params_from_strategy(
+            strategy=strategy, named_params=blueprint_params)
         
         for g_id in unique_geno_ids:
             genome: BaseGenome | None = strategy.id_genotype.get(g_id)
-            
+
             if genome is not None:
-                buffer_idx = g_id if mode == "shared" else strategy.agents[g_id]
+                buffer_idx = [g_id] if self.mode == "shared" else strategy.agents[g_id]
                 self.load_from_genome(
-                    genome=genome, tmp_params=tmp_params, buffer_idx=buffer_idx)
+                    genome=genome, spliced_params=spliced_params, buffer_idx=buffer_idx)
                 
         for idx, name in enumerate(self._param_names):
-            self._param_buffer[str(idx)] = nn.Parameter(tmp_params[name])
+            buffer_name = name.replace('.', '/')
+            self._param_buffer[buffer_name] = nn.Parameter(spliced_params[name])
 
         self.to(self.device)
 
-        # test = super().state_dict()
+    def get_source_params(self, module_substrings: list[str]):
+        return [param for name, param in self._param_buffer.items() 
+                if any(mod in name for mod in module_substrings)]
 
     @property
     def merged_params(self):
         start = time.time()
         params = {}
+        print('self.agent_to_geno_idx', self.agent_to_geno_idx)
         for idx, name in enumerate(self._param_names):
-            param_data = self._param_buffer[str(idx)]
+            buffer_name = name.replace('.', '/')
+            param_data: nn.Parameter = self._param_buffer[buffer_name]
             
             if self.mode == "shared":
                 # indexing creates the virtual population batch [agent_count, ...]
@@ -159,7 +204,7 @@ class BaseAgentHandler(nn.Module):
                 params[name] = param_data[self.agent_to_geno_idx]
             else:
                 params[name] = param_data
-        
         print('time taken for property merged_params', time.time() - start)
+
         return params
 

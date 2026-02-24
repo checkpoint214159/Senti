@@ -22,6 +22,7 @@ from torch.func import functional_call
 from Senti.modules.agents.base import BaseAgent
 from Senti.modules.config.config import ConfigDict
 from Senti.modules.dataclass.action_policy import ActionPolicy
+from Senti.modules.dataclass.categorical import DepthGroupedCategoricalState
 from Senti.modules.dataclass.normal import Normal
 from Senti.modules.dataclass.obs import LatentObservation
 from Senti.modules.dataclass.pomdpstate import POMDPState
@@ -200,8 +201,7 @@ class Agent(BaseAgent):
             params: dict,
             obs: torch.Tensor,
             prev_state: POMDPState | None,
-            prev_action: ActionPolicy | None,
-            batch_size: int,
+            prev_action: torch.Tensor | None,
             atomic_t: int,
         ):
         transition_model = param_traverse('transition_model', params)
@@ -210,20 +210,23 @@ class Agent(BaseAgent):
             # this technically isnt truly stateless right?
             h = self.transition_model.initial_h(
                 1  # magic number 1. i am so cooked. this is to represent timestep
+                # note that this place is not for batch size. this is because we currently handle the batch or 'population'
+                # elsewhere.
             )  # TODO this could be learned?
 
         else:
             assert prev_state is not None and prev_action is not None, 'If atomic_t is not one, must pass in prev state and action.'
             # calculate next h using previous state
-            h, _ = functional_call(
+            _, seed_h = functional_call(
                 self.transition_model,
                 transition_model,
                 kwargs=dict(
                     mode='h',
                     state=prev_state,
-                    action=prev_action
+                    a=prev_action
                 )
             )
+            h = seed_h
 
         z = functional_call(
             self.transition_model,
@@ -365,122 +368,232 @@ class Agent(BaseAgent):
                 )
 
         return total_vfe
-
-
-    def inference_step(
+    
+    def select_wm(
+        self,
+        params: dict,
+        wm: str = 'transition_model',
+    ):
+        """
+        Small helper to select params and retrieve specific wm module.
+        TODO generalize this prolly, to select modules?
+        """
+        if wm == 'transition_model':
+            return self.transition_model, param_traverse('transition_model', params)
+        elif wm == 'grounding_wm':
+            return self.grounding_wm, param_traverse('grounding_wm', params)
+        else:
+            raise NotImplementedError('wm you searching for dont exist brotherman')
+    
+    def f_wm_predict_z(
             self,
-            timestep,
-            backprop_belief=False
+            params: dict,
+            h_t: DepthGroupedCategoricalState,
+            wm: str = 'transition_model',
         ):
-        """
-        Step function to perform belief updating over cache of beliefs.
-
-        Args:
-            timestep: Selected timestep with which we perform inference for
-            P_states: Dict of Ph_t 
-            backprop_belief: Boolean on whether or not to call belief optimizer.
-        """
-        s_t: POMDPState = self._cache.get_semantic('s', timestep)
-
-        # p(z_t | h_t) kl q(z_t | h_t, o_t)
-        h_t = s_t.get('h')
-        pz_t = self.transition_model.forward_z(h_t)
-
-        qz_t = s_t.get('z')
-        self.loss_module.include(
-            ('qz_t vs pz_t', self.loss_module.kl,
-            qz_t, pz_t))
-            
-        tm1 = timestep - 1
-        if self._cache.has_semantic('s', tm1) and self._cache.has_semantic('a', tm1):
-            s_tm1 = self._cache.get_semantic('s', tm1)
-            a_tm1 = self._cache.get_semantic('a', tm1)
-            # -------- how well does posterior from t-1 predict posterior of t -------- 
-            _, _, pz_t_from_tm1= self.transition_model.forward(s_tm1, a_tm1)
-            self.loss_module.include(
-                ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
-                qz_t, pz_t_from_tm1))
-            
-            # ------- loss from action or something lol --------
-            # TODO do we try and do this? will have to predict a from pz_t_from_tm1, and ph_t_from_tm1, which may be mroe unstable?
-        
-        tp1 = timestep + 1
-        if self._cache.has_semantic('s', tp1) and self._cache.has_semantic('a', tp1):
-            qz_tp1 = self._cache.get_semantic('z', tp1)
-            a_tp1 = self._cache.get_semantic('a', tp1)
-            _, _, pz_at_tp1= self.transition_model.forward(s_t, a_tp1)
-            self.loss_module.include(
-                ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,
-                qz_tp1, pz_at_tp1))
-
-        states_energy = self.loss_module.compute()
-
-        # message from obs
-        qz_t, qh_t = s_t.get('z').sample(), s_t.get('h').as_tensor()
-        lat_o_pred = self.zh_o(qz_t, qh_t)
-        lat_o = self._cache.get_semantic('lat_o', timestep)
-
-        obs_MSE = self.loss_module.MSE(lat_o, lat_o_pred)  # positive equivalent for NLL if latent obs
-        # was a variational belief. but it isnt, its just some tensors
-        # it should help to update zh_o and qz_t and qh_t though
-        
-        total_energy = states_energy + obs_MSE
-        # total_energy = states_energy
-
-        if backprop_belief:
-            self.optimizer_registry.do_step(
-                key='states_cache',
-                loss=total_energy
+        module, par = self.select_wm(params, wm)
+        print('gradients enabled in f_wm_predict_z?', [p.requires_grad for p in par.values()])
+        z: Normal = functional_call(
+            module,
+            par,
+            kwargs=dict(
+                h_t=h_t,
+                mode='z',
             )
-
-        return total_energy
-
-    def ground_wm(self):
+        )
+        print('inside agent innards, z has grad_fn?', z.mean.grad_fn)
+        return z
+    
+    def f_wm_full_forward(
+        self,
+        params: dict,
+        s_t: POMDPState,
+        a_t: torch.Tensor,
+        wm: str = 'transition_model',
+    ):
+        module, par = self.select_wm(params, wm)
+        return functional_call(
+            module,
+            par,
+            kwargs=dict(
+                s_t=s_t,
+                a_t=a_t,
+                mode='full',
+            )
+        )
+    
+    def zh_o_forward(
+        self,
+        params: dict,
+        z_t: Normal,
+        h_t: DepthGroupedCategoricalState,
+    ):
+        return functional_call(
+            self.zh_o,
+            param_traverse('zh_o', params),
+            kwargs=dict(
+                z=z_t.sample(),
+                h=h_t.as_tensor(),
+            )
+        )
+    
+    def habitual_head_forward(
+        self,
+        params: dict,
+        z_t: Normal,
+        h_t: DepthGroupedCategoricalState,
+    ):
         """
-        Updates predictive WM to bootstrap it to transition model.
-        Since during planning we operate entirely within imagination space, no observation semantics
-        can be spotted here
+        TODO: habitual head and zh_o are kind of the same thing, just state-dependent prediction machines.
+        Loop them into a general class? Seperate naming for sure just for ease of interpretation, but
+        a lot of code here is repeatable
         """
-        # format x
-        print('-----------------GROUNDING WM STEP-----------------')
-        all_a = self._cache.get('api') \
-            .vmap(lambda s: s.get('a')) \
-            .values()
-        all_z = self._cache.get('states') \
-            .vmap(lambda s: s.get('z')) \
-            .values()
-        all_h = self._cache.get('states') \
-            .vmap(lambda s: s.get('h')) \
-            .values()
+
+        return functional_call(
+            self.habitual_head,
+            param_traverse('habitual_head', params),
+            kwargs=dict(
+                z=z_t.sample(),
+                h=h_t.as_tensor(),
+            )
+        )
+    
+    def deliberative_head_forward(
+        self,
+        params: dict,
+        z_t: Normal,
+        h_t: DepthGroupedCategoricalState,
+        pi: torch.Tensor,
+    ):
+        return functional_call(
+            self.deliberative_head,
+            param_traverse('deliberative_head', params),
+            kwargs=dict(
+                z=z_t,
+                h=h_t,
+                genome=param_traverse('preference_genome', params, single=True),
+                pi=pi,
+            )
+        )
+
+
+
+    # def inference_step(
+    #         self,
+    #         s_t: POMDPState,
+    #         s_tm1: POMDPState | None,
+    #         s_tp1: POMDPState | None,
+    #         backprop_belief=False
+    #     ):
+    #     """
+    #     Step function to perform belief updating over cache of beliefs.
+
+    #     Args:
+    #         timestep: Selected timestep with which we perform inference for
+    #         P_states: Dict of Ph_t 
+    #         backprop_belief: Boolean on whether or not to call belief optimizer.
+    #     """
+    #     s_t: POMDPState = self._cache.get_semantic('s', timestep)
+
+    #     # p(z_t | h_t) kl q(z_t | h_t, o_t)
+    #     h_t = s_t.get('h')
+    #     pz_t = self.transition_model.forward_z(h_t)
+
+    #     qz_t = s_t.get('z')
+    #     self.loss_module.include(
+    #         ('qz_t vs pz_t', self.loss_module.kl,
+    #         qz_t, pz_t))
+            
+    #     tm1 = timestep - 1
+    #     if self._cache.has_semantic('s', tm1) and self._cache.has_semantic('a', tm1):
+    #         s_tm1 = self._cache.get_semantic('s', tm1)
+    #         a_tm1 = self._cache.get_semantic('a', tm1)
+    #         # -------- how well does posterior from t-1 predict posterior of t -------- 
+    #         _, _, pz_t_from_tm1= self.transition_model.forward(s_tm1, a_tm1)
+    #         self.loss_module.include(
+    #             ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
+    #             qz_t, pz_t_from_tm1))
+            
+    #         # ------- loss from action or something lol --------
+    #         # TODO do we try and do this? will have to predict a from pz_t_from_tm1, and ph_t_from_tm1, which may be mroe unstable?
         
-        all_z = type(all_z[0]).concat(all_z, 1)
-        z = all_z.map(lambda z: z[:, :-1])  # exclude the final state when passing to wm
+    #     tp1 = timestep + 1
+    #     if self._cache.has_semantic('s', tp1) and self._cache.has_semantic('a', tp1):
+    #         qz_tp1 = self._cache.get_semantic('z', tp1)
+    #         a_tp1 = self._cache.get_semantic('a', tp1)
+    #         _, _, pz_at_tp1= self.transition_model.forward(s_t, a_tp1)
+    #         self.loss_module.include(
+    #             ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,
+    #             qz_tp1, pz_at_tp1))
 
-        # TODO This is horrible practice, hardcoding [:-1] like that 
-        a = torch.concat(all_a[:-1], 1)
-        seed_h = all_h[0]
-        s = POMDPState(
-            h=seed_h,
-            z=z,  # [B, L-1, z_emb]
-        )
+    #     states_energy = self.loss_module.compute()
 
-        # forward
-        pred_h, _, pred_z = self.grounding_wm.forward(s, a) # [B, L-1, h_emb]
-        # correct wm to accurately predict our beliefs, based only off h.
-        ground_z = all_z.map(lambda z: z[:, 1:])  # get all except first state
-        self.loss_module.include(
-            ('wm_grounding', self.loss_module.kl, 
-            pred_z, ground_z),
-        )
+    #     # message from obs
+    #     qz_t, qh_t = s_t.get('z').sample(), s_t.get('h').as_tensor()
+    #     lat_o_pred = self.zh_o(qz_t, qh_t)
+    #     lat_o = self._cache.get_semantic('lat_o', timestep)
 
-        pred_a = self.habitual_head.forward_hz(pred_h, pred_z)
-        action_mse = self.loss_module.MSE(pred_a, a)
+    #     obs_MSE = self.loss_module.MSE(lat_o, lat_o_pred)  # positive equivalent for NLL if latent obs
+    #     # was a variational belief. but it isnt, its just some tensors
+    #     # it should help to update zh_o and qz_t and qh_t though
+        
+    #     total_energy = states_energy + obs_MSE
+    #     # total_energy = states_energy
 
-        grounding_loss = self.loss_module.compute() + action_mse
+    #     if backprop_belief:
+    #         self.optimizer_registry.do_step(
+    #             key='states_cache',
+    #             loss=total_energy
+    #         )
 
-        self.optimizer_registry.do_step(
-            key='wm',
-            loss=grounding_loss)
+    #     return total_energy
+
+    # def ground_wm(self):
+    #     """
+    #     Updates predictive WM to bootstrap it to transition model.
+    #     Since during planning we operate entirely within imagination space, no observation semantics
+    #     can be spotted here
+    #     """
+    #     # format x
+    #     print('-----------------GROUNDING WM STEP-----------------')
+    #     all_a = self._cache.get('api') \
+    #         .vmap(lambda s: s.get('a')) \
+    #         .values()
+    #     all_z = self._cache.get('states') \
+    #         .vmap(lambda s: s.get('z')) \
+    #         .values()
+    #     all_h = self._cache.get('states') \
+    #         .vmap(lambda s: s.get('h')) \
+    #         .values()
+        
+    #     all_z = type(all_z[0]).concat(all_z, 1)
+    #     z = all_z.map(lambda z: z[:, :-1])  # exclude the final state when passing to wm
+
+    #     # TODO This is horrible practice, hardcoding [:-1] like that 
+    #     a = torch.concat(all_a[:-1], 1)
+    #     seed_h = all_h[0]
+    #     s = POMDPState(
+    #         h=seed_h,
+    #         z=z,  # [B, L-1, z_emb]
+    #     )
+
+    #     # forward
+    #     pred_h, _, pred_z = self.grounding_wm.forward(s, a) # [B, L-1, h_emb]
+    #     # correct wm to accurately predict our beliefs, based only off h.
+    #     ground_z = all_z.map(lambda z: z[:, 1:])  # get all except first state
+    #     self.loss_module.include(
+    #         ('wm_grounding', self.loss_module.kl, 
+    #         pred_z, ground_z),
+    #     )
+
+    #     pred_a = self.habitual_head.forward_hz(pred_h, pred_z)
+    #     action_mse = self.loss_module.MSE(pred_a, a)
+
+    #     grounding_loss = self.loss_module.compute() + action_mse
+
+    #     self.optimizer_registry.do_step(
+    #         key='wm',
+    #         loss=grounding_loss)
         
     def save_genome(self):
         self.genome.save()
@@ -629,8 +742,8 @@ class Agent(BaseAgent):
 
     def f_predict_policy(self, params:dict) -> Normal:
         """functional component of policy prediction. """
-        pp_params = param_traverse('policy_predictor', params)
-        pref_genome = params['preference_genome']
+        pp_params: dict[torch.Tensor] = param_traverse('policy_predictor', params)
+        pref_genome: torch.Tensor = param_traverse('preference_genome', params, single=True)
         policy = functional_call(
             self.policy_predictor, pp_params, pref_genome
         )

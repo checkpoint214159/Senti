@@ -17,26 +17,29 @@ class ActionHead(BaseActionHead):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.config = config
-        self.h_dim: list[int] = config.h_dim
-        self.flattened_h = config.h_dim[0] * config.h_dim[1]
+        self.flattened_h = self.config.flattened_h_dim
         self.a_dim = self.config.a_dim
+        self.hidden_dim = self.config.hidden_dim
         self.z_dim = config.z_dim
         self.state_dim = self.flattened_h + self.z_dim
 
         self.output = nn.Sequential(
-            nn.Linear(self.state_dim, self.a_dim),
-            nn.LayerNorm(self.a_dim),
+            nn.Linear(self.state_dim, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
             nn.ReLU(),
-            nn.Linear(self.a_dim, self.a_dim)
+            nn.Linear(self.hidden_dim, self.a_dim)
         )
 
-    def forward(self, x):
-        return self.output(x)
-    
+    def forward(self, z:torch.Tensor, h:torch.Tensor):
+        x = torch.cat([h, z], dim=-1)
+        # print('h, z and x grad things in ActionHead?',
+        #     h.grad_fn, h.requires_grad, 
+        #     z.grad_fn, z.requires_grad, 
+        #     x.grad_fn, x.requires_grad, 
+        # )
+        a = self.output(x)
+        return a
 
-    def forward_hz(self, h, z):
-        x = torch.cat([h.as_tensor(), z.sample()], dim=-1)
-        return self.forward(x)
 
 
 
@@ -61,10 +64,10 @@ class FiLMActionHead(ExternalActionHead):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.config = config
-        self.h_dim: list[int] = config.h_dim
-        self.flattened_h = config.h_dim[0] * config.h_dim[1]
+        self.flattened_h = self.config.flattened_h_dim
         self.z_dim = config.z_dim
         self.state_dim = self.flattened_h + self.z_dim
+
         self.a_dim = self.config.a_dim
         self.pref_gene_dim = self.config.pref_gene_dim
         self.policy_dim = self.config.policy_dim
@@ -78,11 +81,8 @@ class FiLMActionHead(ExternalActionHead):
 
         self.output = nn.Linear(self.state_dim, self.a_dim)
 
-    def forward_hz(self, h, z, genome, pi):
+    def forward(self, h, z, genome, pi):
         x = torch.cat([h.as_tensor(), z.sample()], dim=-1)
-        return self.forward(x, genome, pi)
-
-    def forward(self, x, genome, pi):
         modulation = self.modulator(torch.cat([genome, pi], dim=-1))
         gamma, beta = torch.chunk(modulation, 2, dim=-1)
         
@@ -91,10 +91,10 @@ class FiLMActionHead(ExternalActionHead):
         
         return self.output(modulated_x)
     
-    def forward_state(self, x:POMDPState, genome, pi):
-        """
-        useful for abstracting logic
-        """
-        return self.forward(x.get_state(), genome, pi)
+    # def forward_state(self, x:POMDPState, genome, pi):
+    #     """
+    #     useful for abstracting logic
+    #     """
+    #     return self.forward(x.get_state(), genome, pi)
 
 

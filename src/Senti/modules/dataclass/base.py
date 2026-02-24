@@ -139,6 +139,7 @@ class BaseState(nn.Module, ABC, metaclass=PyTreeStateRegistryMeta):
 
     def __flatten__(self):
         """pytreee __flatten__ for vmap/jit support."""
+
         raise NotImplementedError('__flatten__ not yet implemented.')
 
     @classmethod

@@ -80,7 +80,8 @@ class BaseGenomeHandler:
 
     This handler has several limited responsibilities:
     1. Describe a strategy with which AgentHandler loads from
-    2. House comparison and selection functionalities across its genomes
+    2. House comparison and selection functionalities across its genomes. E.g genome A vs genome B,
+    which has higher score?
     3. Use 2. to effect generation of 1.
     4. Call genome specific functions, e.g MutateGenome's mutation
     5. Manage and describe paths of genome checkpoints.
@@ -96,24 +97,25 @@ class BaseGenomeHandler:
         self.team_agents = config.team_agents
 
     
-    def strategy_factory(self, prev_strategy: GenotypeStrategy | None = None):
+    def strategy_factory(self, prev_strategy: GenotypeStrategy | None = None) -> GenotypeStrategy:
         """
-        currently only inits an empty strategy. TODO make it generalise to groups that
-        aren't of even size?
+        Produces a GenotypeStr
         """
-        #TODO: none genotypes for now
-        example_strat = GenotypeStrategy(
-            id_genotype={i: None for i in range(self.n_teams)},
-            agents={
-                i: list(range(i * self.team_agents, (i + 1) * self.team_agents))
-                for i in range(self.n_teams)
-            },
-        )
+        if prev_strategy is None:
+            strat = GenotypeStrategy(
+                id_genotype={i: None for i in range(self.n_teams)},
+                agents={
+                    i: list(range(i * self.team_agents, (i + 1) * self.team_agents))
+                    for i in range(self.n_teams)
+                },
+            )
+        # else:
 
-        # inject fake checkpoint
-        # example_strat.id_genotype[0] = Path("/mnt/e/nmmo_actinf/Senti/temp/test/test_gen12_fitness0.0.pth")
 
-        return example_strat
+        # # inject fake checkpoint
+        # # example_strat.id_genotype[0] = Path("/mnt/e/nmmo_actinf/Senti/temp/test/test_gen12_fitness0.0.pth")
+
+        return strat
 
 
 

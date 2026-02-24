@@ -26,43 +26,44 @@ def merge_state_dict(base_sd, other_sd):
 
 
 
-@GENOME.register_module()
-class Genome(BaseGenome):
-    """
-    Class primarily to wrap around multiple genomes
-    and call their methods together.
+# @GENOME.register_module()
+# class ListGenome(BaseGenome):
+#     """
+#     Class primarily to wrap around multiple genomes
+#     and call their methods together.
 
-    Necessitates a merging of genome's blueprints and state_dicts.
-    """
+#     Necessitates a merging of genome's blueprints and state_dicts. Will raise if conflicts happen.
+#     TODO: probably just really bad practice. we should delete this?
+#     """
 
-    def __init__(self, 
-        genomes: list["BaseGenome"]):
+#     def __init__(self, 
+#         genomes: list["BaseGenome"]):
 
-        assert len(set([type(g) for g in genomes])) == len(genomes), \
-            'Assertion failed. genomes must be a unique set of genome types, '
-        blueprint = reduce(merge_modules, [g.blueprint for g in genomes])
+#         assert len(set([type(g) for g in genomes])) == len(genomes), \
+#             'Assertion failed. genomes must be a unique set of genome types, '
+#         blueprint = reduce(merge_modules, [g.blueprint for g in genomes])
         
-        self.genomes = genomes
-        super().__init__(blueprint, self.state_dict())
+#         self.genomes = genomes
+#         super().__init__(blueprint, self.state_dict())
 
-    def __call__(self, method_name: str, **kwargs):
-        for name, g in self.genomes.items():
-            method = g.getattr(method_name)
-            if isinstance(method, callable):
-                self.genomes[name] = method(kwargs)
+#     def __call__(self, method_name: str, **kwargs):
+#         for name, g in self.genomes.items():
+#             method = g.getattr(method_name)
+#             if isinstance(method, callable):
+#                 self.genomes[name] = method(kwargs)
 
-    def cls_names_dict(self):
-        """
-        mapping of the genome class to the names it controls.
-        this is useful where we want to understand the mapping of the various genome types to their
-        """
-        return {
-            type(g): list(g.state_dict.keys()) for g in self.genomes
-        }
+#     def cls_names_dict(self):
+#         """
+#         mapping of the genome class to the names it controls.
+#         this is useful where we want to understand the mapping of the various genome types to their
+#         """
+#         return {
+#             type(g): list(g.state_dict.keys()) for g in self.genomes
+#         }
 
-    def state_dict(self):
-        return reduce(merge_state_dict, [g.state_dict for g in self.genomes])
+#     def state_dict(self):
+#         return reduce(merge_state_dict, [g.state_dict for g in self.genomes])
     
-    @classmethod
-    def of(self):
-        """of can no longer be a classmethod, since """
+#     @classmethod
+#     def of(self):
+#         """of can no longer be a classmethod, since """

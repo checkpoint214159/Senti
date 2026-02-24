@@ -33,7 +33,8 @@ class Experiment:
         Seperate setup stage to initialize strategies, tracking genomes, logging, etc.
         """
         strategy = self.genome_handler.strategy_factory(prev_strategy=prev_strategy)
-        self.agent_handler.load(strategy)
+        #TODO: config for optimizer
+        self.agent_handler.load(strategy, optim=True)
 
         # TODO build env and genome handler soon
 
@@ -42,20 +43,23 @@ class Experiment:
         
     def run(self):
         for i in range(self.rounds):
-
+            test_rounds = 0
             data = self.env_handler.reset()
             # obs, rewards, terimated, truncated, infos = self.env_handler.step()
-            while self.env_handler.is_valid():
+            while self.env_handler.is_valid() or test_rounds == 20:
                 actions = self.agent_handler.forward(data['obs'])
                 data = self.env_handler.step(actions)
+                test_rounds += 1
 
             self.strategy=  self.strategy_factory(prev_strategy=self.strategy)
+
+            die
 
     
 
 
 if __name__ == "__main__":
-    default = "/mnt/e/nmmo_actinf/Senti/src/Senti/configs/base_handler.py"
+    default = "/mnt/e/nmmo_actinf/Senti/src/Senti/configs/agents/base_handler.py"
     config = Config.fromfile(default)
     print('config.does_this_exist', config.does_this_exist)
     e = Experiment(config=config.experiment)

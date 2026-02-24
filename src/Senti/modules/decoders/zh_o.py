@@ -13,12 +13,11 @@ class LatentObsDecoder(nn.Module):
         super().__init__()
         self.config = config
         self.z_dim = config.z_dim
-        self.h_dim = config.h_dim
-        self.flattened_h = config.h_dim[0] * config.h_dim[1]
+        self.flattened_h_dim = config.flattened_h_dim
         self.obs_dim = config.obs_dim
         self.hidden = config.hidden_dim
 
-        zh_dim = self.z_dim + self.flattened_h
+        zh_dim = self.z_dim + self.flattened_h_dim
         self.zh_o = nn.Sequential(
             nn.Linear(zh_dim, self.hidden),
             nn.LayerNorm(self.hidden),
@@ -28,4 +27,6 @@ class LatentObsDecoder(nn.Module):
 
     def forward(self, z:torch.Tensor, h:torch.Tensor):
         zh = torch.concat([z, h], dim=-1)
+        print(f"Layer weight requires_grad in zh_o: {self.zh_o[0].weight.requires_grad}")
+        
         return self.zh_o(zh)

@@ -1,6 +1,5 @@
-from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import pandas as pd
 import torch
@@ -19,20 +18,22 @@ class BaseGenome(nn.Module):
     """
     Simple metadata driven BaseGenome class to wrap around a module. So that we can easily wrap around anything
     and call our methods for it
-    Do not provide any default kwargs: force initializer to provide the state dict
+    Do not provide any default kwargs: force initializer to provide the state dict AND the module it is meant to be loaded into.
+    This means that Genomes
+    
     Also doesnt handle pathing or filenaming, that should be up to the Selector that is using us
-    Reasoning behind the data existing as a state dict is because we wont use this to forward any methods anyway
+    This forces people to subtype Genomes instead of defining them dynamically during runtime.
     """
     def __init__(self, 
         blueprint: nn.Module, 
-        state_dict: dict):
+        gene: dict):
 
         super().__init__()
 
         self.blueprint = blueprint 
 
-        assert self.validate(state_dict, self.blueprint), 'Assertion failed, blueprint and state_dict passed to BaseGenome do not match.'
-        self.gene = state_dict
+        assert self.validate(gene, self.blueprint), 'Assertion failed, blueprint and state_dict passed to BaseGenome do not match.'
+        self.gene = gene
     
     @staticmethod
     def validate(data: dict, blueprint: nn.Module):
@@ -71,8 +72,9 @@ class BaseGenome(nn.Module):
         if instance.validate(data):
             instance.gene = data
         return instance
-
-    def state_dict(self):
+    
+    @property
+    def state_dict(self) -> dict:
         return self.gene
 
 
@@ -80,15 +82,21 @@ class BaseGenome(nn.Module):
 class MutateGenome(BaseGenome):
     """
     Flexible mutation genome that supports different noise distributions
-    and dictionary-based weight manipulation.
+    used to mutate particular names of the state dict.
     """
     def __init__(self,
                 blueprint: nn.Module,
                 gene: dict | None = None,
-                noise_type: str = 'gaussian'):
+                noise_type: str = 'gaussian',
+                mutation_keys: List[str] = [],
+                ):
 
         super().__init__(blueprint, gene)
         self.noise_type = noise_type.lower()
+        self.mutation_keys = mutation_keys
+        for key in self.mutation_keys:
+            if key not in self.gene:
+                raise NotImplementedError(f'key {key} in mutation_keys is not in self.gene dictionary.')
         
     def _generate_noise(self, base_tensor, scale):
         """Generates noise based on the selected torch distribution."""
@@ -102,7 +110,7 @@ class MutateGenome(BaseGenome):
         else:
             raise ValueError(f"Unknown noise type: {self.noise_type}")
 
-    def mutate(self, mutation_rate: float = 0.01, target_prefix: str | None = None):
+    def mutate(self, mutation_rate: float):
         """
         Applies mutation to the weights in self.gene.
         
@@ -111,14 +119,16 @@ class MutateGenome(BaseGenome):
             target_prefix: If provided, only keys starting with this string 
                            (e.g., 'habitual_head') will be mutated.
         """
+        #todo: add warnings instead of erroring out here?
         with torch.no_grad(): 
             for key, weights in self.gene.items():
-                if target_prefix and not key.startswith(target_prefix):
+                if key not in self.mutation_keys:
                     continue
-                
-                if torch.is_floating_point(weights):
+                elif torch.is_floating_point(weights):
                     noise = self._generate_noise(weights, mutation_rate)
                     weights.add_(noise)
+                else:
+                    raise NotImplementedError("Currently cannot mutate non-floating point weights")
 
         return self
 

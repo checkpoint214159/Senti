@@ -1,22 +1,30 @@
 import torch
 import torch.nn as nn
 from torch.distributions import Independent, OneHotCategorical
-
+from einops import rearrange
 from Senti.modules.dataclass.base import BaseState
 
 
 class GroupedCategoricalState(BaseState):
+    """
+    Presumes a tensor shape of [..., G, C]. When as_tensor is called, we will merge the final two to get 
+    [..., GC] shaped tensor (alongside other semantics like sampling).
+    """
 
     def __init__(self,
         logits: torch.Tensor,
         as_parameter: bool = True
     ):
         super().__init__(as_parameter)
-        assert len(logits.shape) >= 3, "Assertion failed. logits must have 3 dimensions minimum, where last two "\
+        assert len(logits.shape) >= 2, "Assertion failed. logits must have 2 dimensions minimum, where last two "\
             "are assumed to be num_groups, num_classes"
         self.logits = nn.Parameter(logits)
         self.num_groups = logits.shape[-2]
         self.num_classes = logits.shape[-1]
+
+    @property
+    def shape(self):
+        return f"GroupedCategoricalState of overall shape {self.logits.shape}, {self.num_groups} groups, {self.num_classes} categories"
 
     @classmethod
     def from_flat_logits(cls, flat_logits: torch.Tensor, num_groups: int, num_classes: int):
@@ -44,7 +52,7 @@ class GroupedCategoricalState(BaseState):
 
     def as_tensor(self, use_sample=False):
         """
-        optionally pass in argument to sample
+        optionally pass in argument to sample.
         """
         if use_sample:
             x = self.sample()
@@ -70,12 +78,27 @@ class GroupedCategoricalState(BaseState):
             as_parameter=False 
         )
     
-    # def compute_energy(self, other: "GroupedCategoricalState", loss_func=None):
-    #     """
-    #     In Active Inference, the energy (VFE) between two categorical 
-    #     states is often the KL Divergence.
-    #     """
-    #     self.assert_type(other)
-    #     p = self.as_distribution()
-    #     q = other.as_distribution()
-    #     return torch.distributions.kl.kl_divergence(p, q)
+class DepthGroupedCategoricalState(GroupedCategoricalState):
+    """
+    Inherit from GroupedCategoricalState, but asserts for the particular shape
+    [Depth, ..., G, C]. as_tensor makes this [..., (Depth * GC)] as a result.
+    """
+    def __init__(self,
+        logits: torch.Tensor,
+        as_parameter: bool = True
+    ):
+        super(GroupedCategoricalState, self).__init__(as_parameter)
+        assert len(logits.shape) >= 3, "Assertion failed. logits must have 3 dimensions minimum, where last two "\
+            "are assumed to be num_groups, num_classes, and the first dimension is the depth of the state."
+        self.logits = nn.Parameter(logits)
+        self.num_groups = logits.shape[-2]
+        self.num_classes = logits.shape[-1]
+        self.depth = logits.shape[0]
+
+    def as_tensor(self, use_sample=False, flatten_depth=True):
+        out = super().as_tensor(use_sample)
+        
+        if flatten_depth:
+            return rearrange(out, "L ... GC -> ... (L GC)")
+        else:
+            return out

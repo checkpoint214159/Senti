@@ -17,11 +17,13 @@ import numpy as np
 import torch
 from omegaconf.dictconfig import DictConfig
 from torch import distributions as torchd
-from torch import nn
+from torch import dtype, nn
 from torch.nn import functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-to_np = lambda x: x.detach().cpu().numpy()
+
+def to_np(x):
+    return x.detach().cpu().numpy()
 
 
 def param_traverse(prefix:str, params:dict, single=False) -> dict[torch.Tensor] | torch.Tensor:
@@ -31,51 +33,53 @@ def param_traverse(prefix:str, params:dict, single=False) -> dict[torch.Tensor] 
     single flag is passed if we are using this to extract one particular module only, and would like
     it neatly as one Tensor only.
     """
-
-    start = time.time()
+    # start = time.time()
     any_prefix = {
-        k[len(prefix):]: v for k, v in params.items()
+        k[len(prefix):]: v for k, v in params.items()  # TODO this does not slice properly for middle substrings being searched for
         if prefix in k
     }
     if single:
         return any_prefix['']
-    print("time taken to traverse params?", time.time() - start)
+    # print("time taken to traverse params?", time.time() - start)
     return any_prefix
 
 
-def nested_stack(items, dim=0):
+def nested_stack(items, dim=0, casttype: dtype | None=None):
     """
     Stacks a list of nested structures (dicts/lists) along a new dimension.
     
     Args:
         items: List of objects with the same nested structure.
         dim: The dimension to stack along.
+        type: Forcibly tries to convert all to a certain type if not None. Dangerous!
     """
     if not items:
         return items
-    
+
     first = items[0]
     
     # Base Case: If the items are Tensors, stack them
     if isinstance(first, torch.Tensor):
         thing = torch.stack(items, dim=dim)
+        if type is not None:
+            thing = thing.to(dtype=casttype)
         return thing
     
     # Recursive Case: If items are Dictionaries
     elif isinstance(first, dict):
         return {
-            key: nested_stack([item[key] for item in items], dim=dim)
+            key: nested_stack([item[key] for item in items], dim=dim, casttype=casttype)
             for key in first.keys()
         }
     
     # Recursive Case: If items are Lists/Tuples
     elif isinstance(first, (list, tuple)):
         return [
-            nested_stack([item[i] for item in items], dim=dim)
+            nested_stack([item[i] for item in items], dim=dim, casttype=casttype)
             for i in range(len(first))
         ]
     
-    # Fallback for non-tensor types (integers, strings, etc.)
+    print(f"nested_stack found a non-dict/list/tensor type: {type(items)}")
     return items
 
 def nmmo_agent_check_config(agent_config: DictConfig):

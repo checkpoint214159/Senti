@@ -32,7 +32,10 @@ optimizer = dict(
     ),
     policy=dict(
         lr=0.005,
-    )
+    ),
+    policy_predictor=dict(
+        lr=0.5,
+    ),
 )
 
 selector = dict(

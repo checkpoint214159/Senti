@@ -1,12 +1,15 @@
 import pufferlib.pytorch
-from .utils import decode_base64, decode_torch_dtype
-from .base import BaseEnvHandler
+
 from Senti.registry import ENVS
+
+from .base import BaseEnvHandler
+from .utils import decode_base64, decode_torch_dtype
 
 
 @ENVS.register_module()
 class NMMOEnvHandler(BaseEnvHandler):
     """
+    
     """
 
     def _decode_response(self, data: dict) -> dict:  # for now no action

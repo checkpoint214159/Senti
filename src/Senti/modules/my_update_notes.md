@@ -374,3 +374,33 @@ AgentHandler: Handles the context of computation of multiple agents, manages los
 Agent: Encapsulates the splitting / traversal of params, and the actual computation, since the nn.Modules lay at its scope. In otherwords it should be pretty much purely functional.
 
 This distinction is important. Also i think ill just make it clearer, by purging all non-computation related semantics from the agent class, so even if someone wants to run "a singular lone agent" they have to go through AgentHandler. Too bad
+
+
+# 25/2/2026
+
+Since the last note I've started completing the vmap / functional call / torch.func paradigm, ran into some issues with it but there appears to be workarounds
+
+For my own understanding and for future reference ill just note the ongoing conflict right now:
+
+What I want:
+Handler: Handles state, logical flow, optimizations, etc.
+Agent: Houses the actual modules that do computation. Provides functional API to call these modules
+Inner modules: Do the computation
+
+With my setup, I think it would be best to have this abstraction, not only for neatness, but also semantics. Take the following example:
+- I have 16 agents, 8 teams of 2. Here batch is population size, and so typically population is another axis of compute we have to deal with.
+- If several agents die, they no longer recieve observations. Thus, my observation population dimension would shrink, say 16 down to 14.
+- The dead agent parameters are no longer learning: Learning for them has truly concluded. Thus, they should be eliminated from the parameter pool.
+
+With the above abstraction, Hanlder can house the logic of 'how many agent parameters to retrieve at this timestep', based on how many are alive. The functional component of Agent, does not need to worry about this, and just does operations along each population slice. 
+
+The alternative to the above, would be a case where i instantiate a module with a population dimension for each of the nn parameters. However, I would need to re-instantiate the module each time agents die right? That is just hasslesome and will probably cost a lot with ever increasing population sizes. It is much more sensible to exploit torch.func, which comes with additional code complexity but probably SOOO much more time and space saved.
+
+27/2/2026
+Question: How do you get stuck on something for 2 days and take several hours to resolve, but the solution is actually very simple?
+
+Answer: It's all in le-head.
+
+Turns out, the reason gradients weren't flowing through my vmap, was because I was cucking them by turning the parameter switch on and then off, but not realising the former had happened.
+
+oh well, alls well that ends well. Made me realise i should develop some kind of mixins for debugging and testing purpose. This is the testing branch, and I still havent written any desperately needed checks. I think that will come at the end of the Handler's completion though, oh well!

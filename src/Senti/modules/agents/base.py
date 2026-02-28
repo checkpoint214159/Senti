@@ -3,11 +3,12 @@ from abc import ABC
 
 import torch
 from torch import nn
+from torch.func import vmap
+from torch.utils._pytree import tree_unflatten
 
 from Senti.modules.config.config import ConfigDict
 from Senti.modules.genome.base import BaseGenome
 from Senti.modules.genome.genome_handler import GenomeRecord, GenotypeStrategy
-from Senti.modules.utils.caches import Cache
 from Senti.registry import AGENTS
 
 
@@ -91,7 +92,25 @@ class BaseAgentHandler(nn.Module):
             self.config.agent_type, self.config.agent, as_stateful=False, preference_genome=None)
         self.mode = self.config.mode
         assert self.mode in ['diverged', 'shared']
-        
+
+    def vmap_call(self,
+        func, in_dims, params_dict, data_args: tuple=(), randomness='same', **inner_kwargs):
+
+        assert len(in_dims) == 1 + len(data_args), 'Assertion failed. in_dims must be of the same length as' \
+            f' 1 + len(data_args) = {1 + len(data_args)},'
+        if inner_kwargs:
+            # We bake the kwargs into the function so the bridge only sees positional tensors
+            def call_fn(p, *a):
+                return func(p, *a, **inner_kwargs)
+        else:
+            call_fn = func
+
+        output = vmap(
+            call_fn, in_dims=in_dims, randomness=randomness
+        )(params_dict, *data_args)
+
+        return output
+    
     def init_params_from_strategy(self,
         strategy: GenotypeStrategy,
         named_params: dict,
@@ -189,22 +208,29 @@ class BaseAgentHandler(nn.Module):
         return [param for name, param in self._param_buffer.items() 
                 if any(mod in name for mod in module_substrings)]
 
-    @property
-    def merged_params(self):
-        start = time.time()
+    def merged_params(self, detached=False):
+        """
+        Property that does indexing of params based on mode of handler.
+        Can be loaded with detached=False if gradients are not desired to be tracked.
+        """
+        # start = time.time()
         params = {}
-        print('self.agent_to_geno_idx', self.agent_to_geno_idx)
+        # print('self.agent_to_geno_idx', self.agent_to_geno_idx)
         for idx, name in enumerate(self._param_names):
             buffer_name = name.replace('.', '/')
             param_data: nn.Parameter = self._param_buffer[buffer_name]
+            if detached:
+                # print('detached!')
+                param_data = param_data.detach()
+                # print('param_data has grad?', param_data.requires_grad)
             
             if self.mode == "shared":
                 # indexing creates the virtual population batch [agent_count, ...]
                 # gradients flow back to the unique rows in _param_buffer
-                params[name] = param_data[self.agent_to_geno_idx]
+                params[name] = param_data[self.agent_to_geno_idx]  # THIS CAUSES GRADIENTS
             else:
                 params[name] = param_data
-        print('time taken for property merged_params', time.time() - start)
+        # print('time taken for property merged_params', time.time() - start)
 
         return params
 

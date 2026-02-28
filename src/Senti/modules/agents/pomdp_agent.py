@@ -177,10 +177,13 @@ class Agent(BaseAgent):
         encoded_seq, _ = functional_call(
             self.obs_autoencoder.encoder, encoder_params, obs_sequence
         )
-        
+        print('encoded_seq in vmap has grad, grad_fn?', encoded_seq.grad, encoded_seq.grad_fn, encoded_seq.requires_grad)
         timestep_conv_params = param_traverse('timestep_conv', params)
-        atomic = functional_call(self.timestep_conv, timestep_conv_params, encoded_seq)
 
+        atomic = functional_call(self.timestep_conv, timestep_conv_params, encoded_seq)
+        print('atomic in vmap has grad, grad_fn?',
+            atomic.grad, atomic.grad_fn, atomic.requires_grad)
+        
         return atomic
 
     def update_latent_obs(self, timesteps:list[int], atomic_t:int):
@@ -200,12 +203,12 @@ class Agent(BaseAgent):
     def f_pred_new_state(self,
             params: dict,
             obs: torch.Tensor,
-            prev_state: POMDPState | None,
-            prev_action: torch.Tensor | None,
-            atomic_t: int,
+            prev_state: POMDPState | None = None,
+            prev_action: torch.Tensor | None = None,
+            init_first_h: bool = True,
         ):
         transition_model = param_traverse('transition_model', params)
-        if atomic_t == 1:
+        if init_first_h:
             # transition_model here uses agent's, because of attributes only it has
             # this technically isnt truly stateless right?
             h = self.transition_model.initial_h(
@@ -215,7 +218,7 @@ class Agent(BaseAgent):
             )  # TODO this could be learned?
 
         else:
-            assert prev_state is not None and prev_action is not None, 'If atomic_t is not one, must pass in prev state and action.'
+            assert prev_state is not None and prev_action is not None, 'If init_first_h is not None, must pass in prev state and action.'
             # calculate next h using previous state
             _, seed_h = functional_call(
                 self.transition_model,
@@ -373,7 +376,7 @@ class Agent(BaseAgent):
         self,
         params: dict,
         wm: str = 'transition_model',
-    ):
+    ) -> tuple[nn.Module, dict[torch.Tensor] | torch.Tensor]:
         """
         Small helper to select params and retrieve specific wm module.
         TODO generalize this prolly, to select modules?
@@ -392,7 +395,6 @@ class Agent(BaseAgent):
             wm: str = 'transition_model',
         ):
         module, par = self.select_wm(params, wm)
-        print('gradients enabled in f_wm_predict_z?', [p.requires_grad for p in par.values()])
         z: Normal = functional_call(
             module,
             par,
@@ -401,7 +403,6 @@ class Agent(BaseAgent):
                 mode='z',
             )
         )
-        print('inside agent innards, z has grad_fn?', z.mean.grad_fn)
         return z
     
     def f_wm_full_forward(

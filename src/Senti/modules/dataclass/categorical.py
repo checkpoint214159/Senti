@@ -13,12 +13,14 @@ class GroupedCategoricalState(BaseState):
 
     def __init__(self,
         logits: torch.Tensor,
-        as_parameter: bool = True
+        as_parameter: bool = True,
+        **kwargs
     ):
-        super().__init__(as_parameter)
+        super().__init__(as_parameter, **kwargs)
         assert len(logits.shape) >= 2, "Assertion failed. logits must have 2 dimensions minimum, where last two "\
             "are assumed to be num_groups, num_classes"
-        self.logits = nn.Parameter(logits)
+        self._kwargs = kwargs
+        self.logits = nn.Parameter(logits) if as_parameter else logits
         self.num_groups = logits.shape[-2]
         self.num_classes = logits.shape[-1]
 
@@ -78,6 +80,13 @@ class GroupedCategoricalState(BaseState):
             as_parameter=False 
         )
     
+    def parameterize(self) -> "GroupedCategoricalState":
+        return self.__class__(
+            logits=self.logits,
+            as_parameter=True,
+            **self._kwargs # Pass the original flags back in
+        )
+
 class DepthGroupedCategoricalState(GroupedCategoricalState):
     """
     Inherit from GroupedCategoricalState, but asserts for the particular shape
@@ -85,15 +94,18 @@ class DepthGroupedCategoricalState(GroupedCategoricalState):
     """
     def __init__(self,
         logits: torch.Tensor,
-        as_parameter: bool = True
+        as_parameter: bool = True,
+        **kwargs,
     ):
         super(GroupedCategoricalState, self).__init__(as_parameter)
         assert len(logits.shape) >= 3, "Assertion failed. logits must have 3 dimensions minimum, where last two "\
             "are assumed to be num_groups, num_classes, and the first dimension is the depth of the state."
-        self.logits = nn.Parameter(logits)
+        self.logits = nn.Parameter(logits) if as_parameter else logits
         self.num_groups = logits.shape[-2]
         self.num_classes = logits.shape[-1]
         self.depth = logits.shape[0]
+
+        self._kwargs = kwargs
 
     def as_tensor(self, use_sample=False, flatten_depth=True):
         out = super().as_tensor(use_sample)

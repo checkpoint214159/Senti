@@ -11,7 +11,6 @@ from Senti.modules.dataclass.action_policy import ActionPolicy
 from Senti.modules.dataclass.normal import Normal
 from Senti.modules.dataclass.obs import LatentObservation
 from Senti.modules.dataclass.pomdpstate import POMDPState
-from Senti.modules.genome.preference_genome import PreferenceGenome
 from Senti.modules.optim.dist_loss import DistributionLosses
 from Senti.modules.optim.optimregistry import OptimRegistry
 from Senti.modules.utils.caches import Cache, HierarchicalCache, create_POMDP_cache
@@ -64,6 +63,15 @@ class POMDPAgentHandler(BaseAgentHandler):
         if you are running a custom method that doesnt use it. so we condition those under optim = True
         """
         super().load(strategy)
+        # self.optim_config: ConfigDict = self.config.optimizer 
+        # self.optimizer_registry = OptimRegistry()
+        # test_policy_predictor = ['policy_predictor']
+        # self.optimizer_registry.register_optim(
+        #     'policy_predictor',
+        #     self.get_source_params(test_policy_predictor),
+        #     **self.optim_config.policy_predictor
+        # )
+
 
         self.curr_policy_dist: Normal = self.policy_init()
 
@@ -81,6 +89,16 @@ class POMDPAgentHandler(BaseAgentHandler):
                 **self.optim_config.inference
             )
 
+            # obs_test = [
+            #     'obs_autoencoder'
+            # ]
+            # self.optimizer_registry.register_optim(
+            #     'obs_autoencoder',
+            #     self.get_source_params(obs_test),
+            #     **self.optim_config.inference
+            # )
+
+
             wm_modules_substrings = ['grounding_wm', 'habitual_head']
             self.optimizer_registry.register_optim(
                 'wm',
@@ -92,6 +110,13 @@ class POMDPAgentHandler(BaseAgentHandler):
                 'policy',
                 list(self.curr_policy_dist.parameters()),
                 **self.optim_config.policy
+            )
+
+            test_policy_predictor = ['policy_predictor']
+            self.optimizer_registry.register_optim(
+                'policy_predictor',
+                self.get_source_params(test_policy_predictor),
+                **self.optim_config.wm
             )
 
 
@@ -127,12 +152,17 @@ class POMDPAgentHandler(BaseAgentHandler):
                     # self.param_learning_steps,
                     10, 2
                 )
-                fsergdty
                 self.ground_wm()
                 self.planning()
         
         self.curr_timestep += 1
         self.prune()
+
+        if self.prev_api is not None:
+            return self.prev_api.get('a')
+        else:
+            return None
+
 
 
 
@@ -155,17 +185,15 @@ class POMDPAgentHandler(BaseAgentHandler):
         stacking the tensor and doing one pass through. this should change
         """
         obs_list = [self.observation_cache.get(t) for t in timesteps]
-        obs_sequence = nested_stack(obs_list, dim=1)
+        obs_sequence = nested_stack(obs_list, dim=1, casttype=torch.float32)
+        params = self.merged_params()
+        population_atomic = self.vmap_call(
+            func=self.agent_blueprint.f_update_latent_obs,
+            in_dims=(0, 0),
+            params_dict=params,
+            data_args=(obs_sequence,),
+        ).detach()
 
-        v_population = vmap(
-            self.agent_blueprint.f_update_latent_obs,
-            in_dims=(0, 0)
-        )
-
-        # detaches to prevent double grad problem
-        population_atomic = v_population(self.merged_params, obs_sequence).detach()
-
-        print('population_atomic shape?', population_atomic.shape)
         self._cache.set_container(
             'latent_obs', 
             atomic_t, 
@@ -175,22 +203,29 @@ class POMDPAgentHandler(BaseAgentHandler):
     def update_states_cache(self, atomic_t: int, obs: torch.Tensor):
         prev_state: POMDPState | None = self._cache.get_semantic('s', atomic_t - 1) if self._cache.has_semantic('s', atomic_t - 1) else None
         prev_action: torch.Tensor | None = self._cache.get_semantic('a', atomic_t - 1) if self._cache.has_semantic('a', atomic_t - 1) else None
-        in_dims = [0, 0, 0, None, None]  # params, obs, prev_state, prev_action, batch_size, atomic_t
+        in_dims = [0, 0]  # params slicing dim
+        data_args = [obs]
 
-        # hardcode to change to None if prev_state / prev_action is None
-        in_dims[2] = None if prev_state is None else 0
-        in_dims[3] = None if prev_action is None else 0
+        if prev_state is not None:
+            data_args.append(prev_state)
+            in_dims.append(0)
+        if prev_action is not None:
+            data_args.append(prev_action)
+            in_dims.append(0)
+        # # hardcode to change to None if prev_state / prev_action is None
+        # in_dims[2] = None if prev_state is None else 0
+        # in_dims[3] = None if prev_action is None else 0
         
-        v_population = vmap(
-            self.agent_blueprint.f_pred_new_state,
+        h, z = self.vmap_call(
+            func=self.agent_blueprint.f_pred_new_state,
             in_dims=tuple(in_dims),
             randomness='same',
+            params_dict=self.merged_params(),
+            data_args=tuple(data_args),
+            init_first_h=False if (prev_state is not None and prev_action is not None) else True, 
         )
-        h, z = v_population(
-            self.merged_params, obs, prev_state, prev_action, atomic_t
-        )
-        h = h.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
-        z = z.clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
+        h = h.parameterize().clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
+        z = z.parameterize().clone(detach=True) # VERY CRUCIAL TO PREVENT DOUBLE GRAD PROBLEM
 
         self._cache.set_container('states', atomic_t, 
             POMDPState(h=h, z=z, as_parameter=True).to(self.device)
@@ -269,18 +304,15 @@ class POMDPAgentHandler(BaseAgentHandler):
             timestep = random.choice(list(self._cache.keys('states')))
             print('-----------Selected atomic timestep---------------', timestep)
             self.inference_step(timestep,
-                # P_states,
                 backprop_belief=True)  # lr scheduling comes later. test first
             self._cache.map_cache('latent_obs', lambda c: c.clone(detach=True))
             # self._cache.map_cache('api', lambda c: c.clone(detach=True))
 
             # every 'param_learning_steps', do param learning (backprop_belief=False)
             if step % param_learning_steps == 0 and step != 0:
-                before_dict = param_traverse('z_given_h.0.weight', self.merged_params)
                 total_vfe = sum(
                     self.inference_step(
                         timestep=t,
-                        # P_states=P_states,
                         backprop_belief=False
                     ) for t in self._cache.keys('states')
                 )
@@ -290,11 +322,7 @@ class POMDPAgentHandler(BaseAgentHandler):
                     key='inference',
                     loss=total_vfe
                 )
-                after_dict = param_traverse('z_given_h.0.weight', self.merged_params)
-                diff_dict = {
-                    k: a - before_dict[k] for k, a in after_dict.items()
-                }
-                print('diff_dict', diff_dict)
+
 
         return total_vfe
     
@@ -317,47 +345,57 @@ class POMDPAgentHandler(BaseAgentHandler):
         # p(z_t | h_t) kl q(z_t | h_t, o_t)
         qh_t = s_t.get('h')
         qz_t = s_t.get('z')
-
-        print('gradients enabled before vmap:', [p.requires_grad for p in self.merged_params.values()])
-        pz_t = vmap(
-            self.agent_blueprint.f_wm_predict_z,
+        # if we are updating beliefs, do not update params.
+        merged_params = self.merged_params(detached=backprop_belief)
+        pz_t = self.vmap_call(
+            func=self.agent_blueprint.f_wm_predict_z,
             in_dims=(0,0),
             randomness='same',
-        )(self.merged_params, qh_t, wm='transition_model')
-        if not backprop_belief:
-            print('Layer weight of z_given_h?', param_traverse('z_given_h', self.merged_params))
-        print('PZ_T RAGHHH', pz_t.shape)
-        print('pz_t has grad_fn??', pz_t.mean.grad_fn)
+            params_dict=merged_params,
+            data_args=(qh_t,),
+            wm='transition_model',
+        )
         self.loss_module.include(
             ('qz_t vs pz_t', self.loss_module.kl,
             qz_t, pz_t))
-        testpz_t = self.loss_module.compute()
-        print('INITIAL PZ_T OUTCOME HAS GRADFN??', testpz_t.grad_fn)
-        # sgdhgd
-        # if testpz_t.grad_fn is None:
-        #     raise NotImplementedError("KABOOM")
-        self.loss_module.include(
-            ('qz_t vs pz_t', self.loss_module.kl,
-            qz_t, pz_t))
-
+        # print('Layer weight of z_given_h?', param_traverse('z_given_h', merged_params))
+        # print('PZ_T', pz_t, pz_t.mean.grad, pz_t.mean.grad_fn, pz_t.mean.requires_grad)
+        # print('pz_t has grad_fn??', pz_t.mean.grad_fn)
+        # test_loss = 0 - (pz_t.mean)
+        # print('test loss gradient???', test_loss.grad_fn, test_loss.grad)
+        # print('z_given_h params before step:', param_traverse('transition_model.z_given_h.1.weight', self.merged_params()))
+        # self.loss_module.include(
+        #     ('qz_t vs pz_t', self.loss_module.kl,
+        #     qz_t, pz_t))
+        # testpz_t = self.loss_module.compute()
+        # self.optimizer_registry.do_step(
+        #     key='inference',
+        #     loss=testpz_t
+        # )
+        # print('z_given_h params after step:', param_traverse('transition_model.z_given_h.1.weight', self.merged_params()))
+        
+        # sdfgh
         tm1 = t - 1
         if self._cache.has_semantic('s', tm1) and self._cache.has_semantic('a', tm1):
             s_tm1 = self._cache.get_semantic('s', tm1)
             a_tm1 = self._cache.get_semantic('a', tm1)
             # -------- how well does posterior from t-1 predict posterior of t -------- 
-            _, _, pz_t_from_tm1 = vmap(
-                self.agent_blueprint.f_wm_full_forward,
+            _, _, pz_t_from_tm1 = self.vmap_call(
+                func=self.agent_blueprint.f_wm_full_forward,
                 in_dims=(0,0,0),
                 randomness='same',
-            )(self.merged_params, s_tm1, a_tm1, wm='transition_model')
-            print('pz_t_from_tm1 RAGHHH', pz_t_from_tm1.shape)
+                params_dict=merged_params,
+                data_args=(s_tm1, a_tm1),
+                wm='transition_model',
+            )
+            # print('pz_t_from_tm1 RAGHHH', pz_t_from_tm1.shape)
             # self.transition_model.forward(s_tm1, a_tm1)
             self.loss_module.include(
                 ('qz_t vs tm1 -> pz_t', self.loss_module.kl,
                 qz_t, pz_t_from_tm1))
-            test_check_grad = self.loss_module.compute()
-            print('tm1 interaction?', test_check_grad)
-            print('has grad from tm1 interaction?', test_check_grad.grad_fn)
+            # test_check_grad = self.loss_module.compute()
+            # print('tm1 interaction?', test_check_grad)
+            # print('has grad from tm1 interaction?', test_check_grad.grad_fn)
             
             # ------- loss from action or something lol --------
             # TODO do we try and do this? will have to predict a from pz_t_from_tm1, and ph_t_from_tm1, which may be mroe unstable?
@@ -367,11 +405,14 @@ class POMDPAgentHandler(BaseAgentHandler):
             qz_tp1 = self._cache.get_semantic('z', tp1)
             a_t = self._cache.get_semantic('a', t)
             # _, _, pz_at_tp1= self.transition_model.forward(s_t, a_tp1)
-            _, _, pz_at_tp1 = vmap(
-                self.agent_blueprint.f_wm_full_forward,
+            _, _, pz_at_tp1 = self.vmap_call(
+                func=self.agent_blueprint.f_wm_full_forward,
                 in_dims=(0,0,0),
                 randomness='same',
-            )(self.merged_params, s_t, a_t,  wm='transition_model')
+                params_dict=merged_params,
+                data_args=(s_t, a_t),
+                wm='transition_model',
+            )
             self.loss_module.include(
                 ('qz_tp1 vs t -> pz_tp1', self.loss_module.kl,
                 qz_tp1, pz_at_tp1))
@@ -382,11 +423,13 @@ class POMDPAgentHandler(BaseAgentHandler):
         #     raise NotImplementedError("EXPLODEA!!!!")
 
         # message from obs
-        lat_o_pred = vmap(
-            self.agent_blueprint.zh_o_forward,
+        lat_o_pred = self.vmap_call(
+            func=self.agent_blueprint.zh_o_forward,
             in_dims=(0,0,0),
             randomness="same",
-        )(self.merged_params, qz_t, qh_t)
+            params_dict=merged_params,
+            data_args=(qz_t, qh_t),
+        )
         lat_o = self._cache.get_semantic('lat_o', t)
 
         obs_MSE = self.loss_module.MSE(lat_o, lat_o_pred)  # positive equivalent for NLL if latent obs
@@ -420,16 +463,17 @@ class POMDPAgentHandler(BaseAgentHandler):
         Since during planning we operate entirely within imagination space, no observation semantics
         can be spotted here
         """
+        merged_params = self.merged_params()
         # format x
         print('-----------------GROUNDING WM STEP-----------------')
         all_a = self._cache.get('api') \
-            .vmap(lambda s: s.get('a')) \
+            .valuemap(lambda s: s.get('a')) \
             .values()
         all_z = self._cache.get('states') \
-            .vmap(lambda s: s.get('z')) \
+            .valuemap(lambda s: s.get('z')) \
             .values()
         all_h = self._cache.get('states') \
-            .vmap(lambda s: s.get('h')) \
+            .valuemap(lambda s: s.get('h')) \
             .values()
         
         all_z = type(all_z[0]).concat(all_z, 1)
@@ -445,11 +489,14 @@ class POMDPAgentHandler(BaseAgentHandler):
         )
 
         # forward
-        _, pred_h, pred_z = vmap(
-            self.agent_blueprint.f_wm_full_forward,
+        _, pred_h, pred_z = self.vmap_call(
+            func=self.agent_blueprint.f_wm_full_forward,
             in_dims=(0,0,0),
+            params_dict=merged_params,
             randomness='same',
-        )(self.merged_params, s, a,  wm='grounding_wm')
+            data_args=(s, a),
+            wm='grounding_wm'
+        )
 
         # correct wm to accurately predict our beliefs, based only off h.
         ground_z = all_z.map(lambda z: z[:, 1:])  # get all except first state
@@ -458,12 +505,14 @@ class POMDPAgentHandler(BaseAgentHandler):
             pred_z, ground_z),
         )
 
-        pred_a = vmap(
+        pred_a = self.vmap_call(
             self.agent_blueprint.habitual_head_forward,
             in_dims=(0,0,0),
+            params_dict=merged_params,
             randomness='same',
-        )(self.merged_params, pred_z, pred_h)
-        print('pred_a gradfn in ground_wm?', pred_a.grad_fn)
+            data_args=(pred_z, pred_h)
+        )
+
         action_mse = self.loss_module.MSE(pred_a, a)
 
         grounding_loss = self.loss_module.compute() + action_mse
@@ -487,54 +536,64 @@ class POMDPAgentHandler(BaseAgentHandler):
         Start at t-1, because we dont have action for the current step, so
         we must take the previous action
         """
+        merged_params = self.merged_params(detached=True)
         # first, create planning priors from wm
         seed_s = self._cache.get_semantic('s', self.atomic_count - 1)
         seed_h, seed_z = seed_s.get('h'), seed_s.get('z')
-        seed_a = vmap(
-            self.agent_blueprint.habitual_head_forward,
+        seed_a = self.vmap_call(
+            func=self.agent_blueprint.habitual_head_forward,
             in_dims=(0,0,0),
+            params_dict=merged_params,
             randomness='same',
-        )(self.merged_params, seed_z, seed_h)
+            data_args=(seed_z, seed_h)
+        )
         print('seed_a gradfn in ground_wm?', seed_a.grad_fn)
 
         s, a = seed_s, seed_a
         priors = [s]
         # freeze gradients for prior_z
         print("NO WITHOUT GRAD CONTEXT HERE!!")
-        for _ in range(self.planning_horizon):  # predict t+1, t+2, ...
-            _, h, z = vmap(
-                self.agent_blueprint.f_wm_full_forward,
-                in_dims=(0,0,0),
-                randomness='same',
-            )(self.merged_params, s, a,  wm='grounding_wm')
-            
-            a = vmap(
-                self.agent_blueprint.habitual_head_forward,
-                in_dims=(0,0,0),
-                randomness='same',
-            )(self.merged_params, z, h)
-            print('a gradfn in planning?', a.grad_fn)
+        with torch.no_grad():
+            for _ in range(self.planning_horizon):  # predict t+1, t+2, ...
+                _, h, z = self.vmap_call(
+                    func=self.agent_blueprint.f_wm_full_forward,
+                    in_dims=(0,0,0),
+                    params_dict=merged_params,
+                    randomness='same',
+                    data_args=(s, a),
+                    wm='grounding_wm'
+                )
+                
+                a = self.vmap_call(
+                    func=self.agent_blueprint.habitual_head_forward,
+                    in_dims=(0,0,0),
+                    params_dict=merged_params,
+                    randomness='same',
+                    data_args=(z, h)
+                )
+                # print('a gradfn in planning?', a.grad_fn)
 
-            s = POMDPState(
-                h=h,
-                z=z,
-                as_parameter=False,
-            )
-            priors.append(s)
-        prior_z = [s.get('z') for s in priors]
+                s = POMDPState(
+                    h=h,
+                    z=z,
+                    as_parameter=False,
+                )
+                priors.append(s)
+            prior_z = [s.get('z') for s in priors]
 
-        # old_policy = self.curr_policy_dist.clone(detach=True)
 
         for i in range(self.planning_steps):
             self.planning_step(seed_s, seed_a, prior_z)
 
         # lastly, sample updated policy
         final_pi = self.curr_policy_dist.sample()
-        final_a = vmap(
-            self.agent_blueprint.deliberative_head_forward,
+        final_a = self.vmap_call(
+            func=self.agent_blueprint.deliberative_head_forward,
             in_dims=(0,0,0,0),
             randomness='same',
-        )(self.merged_params, seed_z, seed_h, final_pi)
+            params_dict=merged_params,
+            data_args=(seed_z, seed_h, final_pi)
+        )
 
         self.prev_api = ActionPolicy(
             a=final_a.detach(),
@@ -552,23 +611,24 @@ class POMDPAgentHandler(BaseAgentHandler):
     ):  
         efe = 0
         for _ in range(self.n_policies_sampled):
+            params = self.merged_params(detached=False)
             pi = self.curr_policy_dist.sample()
-            print('pi?', pi)
-            rollout = self.rollout(seed_s=seed_s, seed_a=seed_a, policy=pi)
-            print('pi after rollouts??', pi)
+            # print('pi?', pi)
+            rollout = self.rollout(params=params, seed_s=seed_s, seed_a=seed_a, policy=pi)
+            # print('pi after rollouts??', pi)
             rollout_z = [s.get('z') for s in rollout]
-            print('rollout_z grads?', [z.mean.grad_fn for z in rollout_z])
-            print('prior_z grads?', [z.mean.grad_fn for z in prior_z])
+            # print('rollout_z grads?', [z.mean.grad_fn for z in rollout_z])
+            # print('prior_z grads?', [z.mean.grad_fn for z in prior_z])
             [self.loss_module.include(
                 ('instrumental_value', self.loss_module.kl, 
                 rz, pz),
             ) for rz, pz in zip(rollout_z, prior_z)]
             instrumental = self.loss_module.compute()
 
-            epistemic = sum([s.get('z').entropy() for s in rollout])
-            print('instrumental?', instrumental.grad_fn, 'epistemic', epistemic.grad_fn)
+            epistemic = torch.sum(sum([s.get('z').entropy() for s in rollout]))
+            # print('instrumental?', instrumental, 'epistemic', epistemic)
             efe += instrumental - epistemic
-            print('efe grad fn?', efe.grad_fn)
+            # print('efe grad fn?', efe)
             
         self.optimizer_registry.do_step(
             key='policy',
@@ -577,6 +637,7 @@ class POMDPAgentHandler(BaseAgentHandler):
 
     def rollout(
             self,
+            params,
             seed_s,
             seed_a,
             policy,
@@ -589,34 +650,39 @@ class POMDPAgentHandler(BaseAgentHandler):
         s, a = seed_s, seed_a
         # print('seed_s', seed_s)
         for _ in range(self.planning_horizon):
-            _, h, z = vmap(
-                self.agent_blueprint.f_wm_full_forward,
+            _, h, z = self.vmap_call(
+                func=self.agent_blueprint.f_wm_full_forward,
                 in_dims=(0,0,0),
+                params_dict=params,
                 randomness='same',
-            )(self.merged_params, s, a, wm='transition_model')
-            print('gradient fn of z in rollout?', z.mean.grad_fn)
+                data_args=(s, a),
+                wm='grounding_wm'
+            )
+            # print('gradient fn of z in rollout?', z.mean.grad_fn)
 
-            a = vmap(
-                self.agent_blueprint.deliberative_head_forward,
+            a = self.vmap_call(
+                func=self.agent_blueprint.deliberative_head_forward,
                 in_dims=(0,0,0,0),
                 randomness='same',
-            )(self.merged_params, z, h, policy)
+                params_dict=params,
+                data_args=(z, h, policy)
+            )
 
             s = POMDPState(
                 h=h,
                 z=z,
                 as_parameter=False,
             )
-            print('grad of a?', a.grad_fn)
+            # print('grad of a?', a.grad_fn)
             rollout.append(s)
 
-            print('-----------TESTING SAMPLING---------------')
-            print('z mean has grad after sampling?')
-            testz = z.sample()
-            print('z_mean grad fn?', z.mean.grad_fn)
-            print('policy dist has grad after sampling?')
-            testpolicygrad = self.curr_policy_dist.sample()
-            print('curr_policy_dist mean grad fn?', self.curr_policy_dist.mean.grad_fn)
+            # print('-----------TESTING SAMPLING---------------')
+            # print('z mean has grad after sampling?')
+            # testz = z.sample()
+            # print('z_mean grad fn?', z.mean.grad_fn)
+            # print('policy dist has grad after sampling?')
+            # testpolicygrad = self.curr_policy_dist.sample()
+            # print('curr_policy_dist mean grad fn?', self.curr_policy_dist.mean.grad_fn)
 
         return rollout
 
@@ -637,13 +703,26 @@ class POMDPAgentHandler(BaseAgentHandler):
 
 
     def policy_init(self) -> Normal:
-        v_population = vmap(
-            self.agent_blueprint.f_predict_policy,
+        policy = self.vmap_call(
+            func=self.agent_blueprint.f_predict_policy,
             in_dims=(0,),
-            randomness='same',
-        )
+            params_dict=self.merged_params(),
+        ).parameterize().clone(detach=True)
 
-        policy: Normal = v_population(self.merged_params).parameterize().clone(detach=True)
+        # test_loss = policy.mean.sum()
+        # print('test_loss?', test_loss)
+        # print('before step, policy_predictor params are:',
+        #       param_traverse('policy_predictor', self.merged_params()))
+
+        # self.optimizer_registry.do_step(
+        #     key='policy_predictor',
+        #     loss=(0-test_loss),
+        # )
+        
+        # print('after step, policy_predictor params are:',
+        #       param_traverse('policy_predictor', self.merged_params()))
+        # afsgd
+
         return policy
     
     def prune(self):

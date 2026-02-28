@@ -27,6 +27,6 @@ class LatentObsDecoder(nn.Module):
 
     def forward(self, z:torch.Tensor, h:torch.Tensor):
         zh = torch.concat([z, h], dim=-1)
-        print(f"Layer weight requires_grad in zh_o: {self.zh_o[0].weight.requires_grad}")
+        # print(f"Layer weight requires_grad in zh_o: {self.zh_o[0].weight.requires_grad}")
         
         return self.zh_o(zh)

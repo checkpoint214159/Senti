@@ -45,7 +45,7 @@ class Cache:
         self._data = dict(data)
         return self
     
-    def vmap(self, func) -> "Cache":
+    def valuemap(self, func) -> "Cache":
         """
         god i hate what cs2030 has done to me
         maps v -> func(v) for all v 

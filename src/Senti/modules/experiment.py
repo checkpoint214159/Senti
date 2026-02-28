@@ -35,23 +35,25 @@ class Experiment:
         strategy = self.genome_handler.strategy_factory(prev_strategy=prev_strategy)
         #TODO: config for optimizer
         self.agent_handler.load(strategy, optim=True)
-
+        self.strategy = strategy
         # TODO build env and genome handler soon
 
         return strategy
 
         
     def run(self):
+        print('get_spaces envs', self.env_handler.get_spaces())
+        zfd
         for i in range(self.rounds):
-            test_rounds = 0
+            test_rounds = 0  # temp variable
             data = self.env_handler.reset()
             # obs, rewards, terimated, truncated, infos = self.env_handler.step()
-            while self.env_handler.is_valid() or test_rounds == 20:
+            while self.env_handler.is_valid() and test_rounds <= 20:
                 actions = self.agent_handler.forward(data['obs'])
                 data = self.env_handler.step(actions)
                 test_rounds += 1
-
-            self.strategy=  self.strategy_factory(prev_strategy=self.strategy)
+                print('test_rounds?', test_rounds)
+            self.strategy = self.genome_handler.strategy_factory(prev_strategy=self.strategy)
 
             die
 

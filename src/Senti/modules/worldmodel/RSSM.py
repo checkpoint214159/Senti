@@ -62,12 +62,13 @@ class RSSM(nn.Module):
         G, C = self.h_groups, self.h_classes
         dims = (self.num_GRU_layers, ) + dims + (G, C)
         # dims = dims + (G, C)
-        print('dims in init h?', dims)
+        # print('dims in init h?', dims)
         h_t = torch.zeros(dims, device=self.device)
         return DepthGroupedCategoricalState(h_t)
     
 
-    def wrap_z(self, z_mean_logstd, is_posterior=None) -> Normal:
+    def wrap_z(self, z_mean_logstd,
+        is_posterior=None, as_parameter=False) -> Normal:
         """wraps z in our normal"""
         mean, log_std = torch.split(z_mean_logstd, self.z_dim, dim=-1)
         log_std = torch.clamp(log_std, min=-5, max=2)
@@ -76,6 +77,7 @@ class RSSM(nn.Module):
             z_mean=mean,
             z_log_std=std,
             is_posterior=is_posterior,
+            as_parameter=as_parameter,
         )
 
 
@@ -134,16 +136,14 @@ class RSSM(nn.Module):
         """
         G, C = self.h_groups, self.h_classes
         prev_z, prev_h = state.get('z'), state.get('h')
-        print("IN FORWARD_H?", prev_z.shape, prev_h.as_tensor().shape)
         z = prev_z.sample()
-        print('z and a shape?', z.shape, a.shape)
+
         x = torch.cat([z, a], dim=-1)  # [..., Len, az_emb]
         prev_h = prev_h.as_tensor(flatten_depth=False)  # [..., T, h_emb]. T SHOULD be 1 here.
-        print('prev_h shape?', prev_h.shape, "x shape?", x.shape)
+
         assert prev_h.shape[-2] == 1, 'Assertion failed. T should be 1 only, since it is the seed'
 
         last_layer_output, seed = self.gru_step(x, t=0, prev_h=prev_h)
-        print('out h and seed?', last_layer_output.shape, seed.shape)
 
         return last_layer_output, \
             DepthGroupedCategoricalState.from_flat_logits(seed, G, C)
@@ -155,17 +155,15 @@ class RSSM(nn.Module):
         Still accept the whole POMDPState as an argument, to keep abstraction neat
         """
         is_posterior = False
-        print('h_t before as_tensor, does it require grad', h_t.logits.grad_fn, h_t.logits.requires_grad)
+        
         h_t = h_t.as_tensor() # -> [... G, C] into [..., G * C]
-        print('h_t type, gradfn, requires', type(h_t), h_t.grad_fn, h_t.requires_grad)
-        print(f"Layer weight requires_grad: {self.z_given_h[0].weight.requires_grad}")
         if external is not None:
             is_posterior = True
             x = torch.cat([h_t, external], dim=-1)
             z = self.z_given_h_ext(x)
         else:
             z = self.z_given_h(h_t)
-        print('z inside forward_z has grad_fn?', z.grad_fn, z.requires_grad)
+        
         return self.wrap_z(z, is_posterior)
     
 
@@ -196,8 +194,8 @@ if __name__ == "__main__":
         num_classes=h_dim[1],
     )
     example_obs = torch.randn((1, obs_dim))
-    print('example_h shape?', example_h.shape)
-    print('example_obs shape?', example_obs.shape)
+    # print('example_h shape?', example_h.shape)
+    # print('example_obs shape?', example_obs.shape)
     rssm.forward_z(
         h_t = example_h,
         external = example_obs,
